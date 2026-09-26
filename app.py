@@ -91,6 +91,7 @@ def create_app(config=None, player=None, spotify=None):
         SCHEDULER_ENABLED=True,
         AUDIO_BACKEND=os.environ.get("AUDIO_BACKEND", "local"),
         SOUND_PATH=os.environ.get("ALARM_SOUND", str(DEFAULT_SOUND)),
+        ALSA_DEVICE=os.environ.get("ALSA_DEVICE", ""),  # solo Linux (aplay -D)
         SPOTIFY_CLIENT_ID=os.environ.get("SPOTIFY_CLIENT_ID", ""),
         SPOTIFY_CLIENT_SECRET=os.environ.get("SPOTIFY_CLIENT_SECRET", ""),
         SPOTIFY_REDIRECT_URI=os.environ.get(

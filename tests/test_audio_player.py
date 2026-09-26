@@ -93,10 +93,11 @@ class LocalAudioPlayerTest(unittest.TestCase):
 
     def test_linux_missing_aplay_is_logged(self):
         player = LocalAudioPlayer(self.sound, platform="linux")
-        with mock.patch.object(audio_player.subprocess, "Popen",
-                               side_effect=FileNotFoundError("aplay")), \
-                self.assertLogs("alarms", "ERROR"):
+        missing = FileNotFoundError(2, "No such file or directory", "aplay")
+        with mock.patch.object(audio_player.subprocess, "Popen", side_effect=missing), \
+                self.assertLogs("alarms", "ERROR") as logs:
             self.assertFalse(player.play())
+        self.assertIn("sudo apt install alsa-utils", logs.output[0])
 
     def test_aplay_failure_is_logged_by_watcher(self):
         player = LocalAudioPlayer(self.sound, platform="linux")

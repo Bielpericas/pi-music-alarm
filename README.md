@@ -79,11 +79,188 @@ flask --app app run --host 0.0.0.0
 
 Abre `http://<IP-del-PC>:5000` en el móvil (la IP la ves con `ipconfig`). Puede que el Firewall de Windows pida permiso la primera vez.
 
+También puedes probar en Windows el modo producción que se usa en la Pi, con `python serve.py`
+(waitress, escuchando en `0.0.0.0:5000`).
+
 ### Tests
 
 ```powershell
 python -m unittest discover tests -v
 ```
+
+## Instalación en Raspberry Pi OS Lite (Raspberry Pi Zero 2 W)
+
+Probado con Raspberry Pi OS Lite de 64 bits (Bookworm, Python 3.11, o Trixie, Python 3.13).
+La app es la misma que en Windows; en la Pi se ejecuta con **`serve.py`** (waitress), que escucha en la
+red local, y como **servicio systemd** para que arranque sola.
+
+En los comandos, `<usuario>` es el usuario que creaste al grabar la tarjeta con Raspberry Pi Imager.
+
+### 0. Antes de empezar: audio en la Zero 2 W
+
+La Zero 2 W **no tiene salida de audio analógica (jack)**. El sonido sale por el mini-HDMI (monitor o TV
+con altavoces), por una tarjeta de sonido USB, por un DAC I2S (tipo HAT) o por Bluetooth. Lo más
+sencillo es una tarjeta USB barata con un adaptador micro-USB OTG.
+
+### 1. Paquetes del sistema
+
+```bash
+sudo apt update
+sudo apt full-upgrade -y
+sudo apt install -y git python3 python3-venv python3-pip alsa-utils
+```
+
+- `python3-venv`: crear el entorno virtual.
+- `alsa-utils`: incluye `aplay`, que reproduce el WAV.
+- No hace falta compilar nada: todas las dependencias tienen versión en Python puro o wheel para ARM.
+
+### 2. Clonar el repositorio
+
+```bash
+cd ~
+git clone <URL-de-tu-repositorio> pi-music-alarm
+cd pi-music-alarm
+```
+
+Puedes clonarlo en otra carpeta: ni el servicio ni los scripts dependen de la ruta.
+
+### 3. Entorno virtual y dependencias
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
+```
+
+En la Zero 2 W tarda un par de minutos.
+
+### 4. Configurar `.env`
+
+`.env` no está en git: créalo en la Pi.
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+- `SECRET_KEY`: genérala con `python3 -c "import secrets; print(secrets.token_hex(32))"`.
+- `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET`: los mismos que en el PC.
+- `SPOTIFY_REDIRECT_URI`: déjala en `http://127.0.0.1:5000/spotify/callback` (ver paso 9).
+- `ALSA_DEVICE`: solo si el sonido no sale por la tarjeta buena (ver paso 6).
+- `HOST` / `PORT`: por defecto `0.0.0.0` y `5000`, accesible desde la red local.
+
+```bash
+chmod 600 .env   # solo tu usuario puede leer los secretos
+```
+
+### 5. Zona horaria y hora
+
+Las alarmas usan la hora del sistema. La Pi **no tiene reloj con pila**: al encenderse toma la hora
+de Internet (NTP), así que necesita red.
+
+```bash
+sudo timedatectl set-timezone Europe/Madrid     # o la tuya: timedatectl list-timezones
+timedatectl                                     # debe decir "System clock synchronized: yes"
+```
+
+Para que el servicio espere a tener la hora sincronizada antes de arrancar (recomendado):
+
+```bash
+sudo systemctl enable systemd-time-wait-sync
+```
+
+### 6. Probar el sonido con aplay
+
+```bash
+.venv/bin/python tools/make_test_sound.py      # crea sounds/alarm.wav
+aplay -l                                        # lista las tarjetas de sonido
+aplay sounds/alarm.wav                          # prueba con la tarjeta por defecto
+```
+
+Si no suena por donde quieres, busca tu tarjeta con `aplay -L` y pruébala:
+
+```bash
+aplay -D plughw:CARD=Device,DEV=0 sounds/alarm.wav
+```
+
+Usa `plughw:` y no `hw:`: convierte el formato del WAV al que admita la tarjeta. Cuando suene, pon
+ese valor en `.env`:
+
+```
+ALSA_DEVICE=plughw:CARD=Device,DEV=0
+```
+
+El volumen se ajusta con `alsamixer`: F6 elige la tarjeta y la tecla M quita el silencio.
+
+### 7. Ejecutar la app a mano (prueba)
+
+```bash
+.venv/bin/python serve.py
+```
+
+- Desde el móvil o el PC, abre `http://<IP-de-la-Pi>:5000`. La IP la ves con `hostname -I`; también
+  suele funcionar `http://<nombre-de-la-pi>.local:5000`.
+- Crea una alarma y pulsa **Probar**: debe sonar el WAV.
+- Para parar, pulsa Ctrl+C.
+
+No uses `python app.py` en la Pi: es el modo desarrollo (debug, solo `127.0.0.1`).
+
+### 8. Arranque automático (systemd)
+
+```bash
+bash deploy/install-service.sh
+```
+
+El script:
+1. Rellena `deploy/pi-music-alarm.service.template` con **tu usuario y la carpeta real** del
+   repositorio (no hay rutas fijas).
+2. Lo instala como `/etc/systemd/system/pi-music-alarm.service` (pide la contraseña de sudo).
+3. Lo activa y lo arranca.
+
+Para usar otro usuario: `SERVICE_USER=otro bash deploy/install-service.sh`.
+
+Gestión del servicio:
+
+| Acción | Comando |
+|---|---|
+| Ver estado | `sudo systemctl status pi-music-alarm` |
+| Iniciar | `sudo systemctl start pi-music-alarm` |
+| Detener | `sudo systemctl stop pi-music-alarm` |
+| Reiniciar (p. ej. tras cambiar `.env` o hacer `git pull`) | `sudo systemctl restart pi-music-alarm` |
+| Logs en directo | `journalctl -u pi-music-alarm -f` |
+| Logs desde el último arranque | `journalctl -u pi-music-alarm -b` |
+| No arrancar al encender | `sudo systemctl disable pi-music-alarm` |
+| Desinstalar | `sudo systemctl disable --now pi-music-alarm && sudo rm /etc/systemd/system/pi-music-alarm.service && sudo systemctl daemon-reload` |
+
+Las alarmas también quedan en `instance/alarms.log`.
+
+Para actualizar:
+
+```bash
+git pull
+.venv/bin/pip install -r requirements.txt
+sudo systemctl restart pi-music-alarm
+```
+
+### 9. Vincular Spotify desde la Pi
+
+Spotify solo acepta redirect URIs `http://` con `127.0.0.1`, no con la IP de la Pi en la red. Por eso
+el paso **Conectar Spotify** se hace con un túnel SSH desde tu PC, **una sola vez**: los tokens se
+guardan en la Pi y se renuevan solos.
+
+En el PC (PowerShell), con la app corriendo en la Pi:
+
+```powershell
+ssh -L 5000:127.0.0.1:5000 <usuario>@<IP-de-la-Pi>
+```
+
+Deja esa ventana abierta y, en el navegador del PC, abre **http://127.0.0.1:5000/spotify/**, pulsa
+**Conectar Spotify** y acepta. Si en el PC tienes la app de desarrollo usando el puerto 5000, párala
+antes. Luego ya puedes cerrar el túnel y usar la Pi con su IP normal.
+
+Recuerda que una alarma Spotify suena en un **dispositivo Spotify Connect** (móvil, altavoz, PC con
+Spotify abierto). La Pi todavía no es uno de ellos: eso llegará con librespot. Si no hay
+dispositivo disponible, suena el WAV por la tarjeta de la Pi.
 
 ## Cómo funciona el scheduler
 
@@ -204,6 +381,8 @@ audio_player.py     # AudioPlayer / LocalAudioPlayer (winsound o aplay)
 spotify_client.py   # todo el HTTP con Spotify: OAuth, refresh, errores
 spotify_views.py    # rutas /spotify/...
 spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> reproducir
+serve.py            # arranque de producción (waitress, red local)
+deploy/             # plantilla systemd + install-service.sh
 .env.example        # plantilla de configuración (copiar a .env)
 schema.sql          # tablas "alarms", "spotify_auth" y "settings"
 sounds/             # alarm.wav (no se sube a git)
@@ -221,5 +400,5 @@ Cada alarma guarda `name`, `time` (`HH:MM`), `days` (p. ej. `"0,2,4"`, donde 0 =
 
 - Buscar canciones o playlists desde la app, en vez de pegar la URL.
 - Volumen progresivo y botón para parar o posponer la alarma.
-- En la Pi: servir con un servidor de producción ligero (p. ej. `waitress`) y un servicio `systemd`.
+- librespot para que la propia Pi sea un dispositivo Spotify Connect.
 - Protección CSRF y un `SECRET_KEY` real (variable de entorno `SECRET_KEY`) si la app se expone fuera de la red local.

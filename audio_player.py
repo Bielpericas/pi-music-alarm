@@ -41,11 +41,14 @@ class LocalAudioPlayer(AudioPlayer):
 
     - Windows: `winsound` de la librería estándar (asíncrono, sin dependencias).
     - Linux / Raspberry Pi OS: `aplay` (paquete alsa-utils) en un subproceso.
+      `alsa_device` (p. ej. "plughw:CARD=Device,DEV=0") elige la tarjeta de
+      sonido; si no se indica, aplay usa la tarjeta por defecto de ALSA.
     """
 
-    def __init__(self, sound_path, platform=None):
+    def __init__(self, sound_path, platform=None, alsa_device=None):
         self.sound_path = Path(sound_path)
         self.platform = platform or sys.platform
+        self.alsa_device = alsa_device or None
         self._process = None
         self._lock = threading.Lock()
 
@@ -64,6 +67,12 @@ class LocalAudioPlayer(AudioPlayer):
             else:
                 logger.error("Audio local no soportado en la plataforma %s", self.platform)
                 return False
+        except FileNotFoundError as exc:
+            if exc.filename == "aplay":
+                logger.error("aplay no está instalado. En Raspberry Pi OS: sudo apt install alsa-utils")
+            else:
+                logger.exception("Error al reproducir %s", self.sound_path)
+            return False
         except Exception:
             logger.exception("Error al reproducir %s", self.sound_path)
             return False
@@ -103,8 +112,11 @@ class LocalAudioPlayer(AudioPlayer):
         )
 
     def _play_aplay(self):
+        command = ["aplay", "-q"]
+        if self.alsa_device:
+            command += ["-D", self.alsa_device]
         process = subprocess.Popen(
-            ["aplay", "-q", str(self.sound_path)],
+            command + [str(self.sound_path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
@@ -125,7 +137,7 @@ def create_player(config):
     """Construye el reproductor según la configuración de la app."""
     backend = config.get("AUDIO_BACKEND", "local")
     if backend == "local":
-        return LocalAudioPlayer(config["SOUND_PATH"])
+        return LocalAudioPlayer(config["SOUND_PATH"], alsa_device=config.get("ALSA_DEVICE"))
     if backend == "none":
         return NullAudioPlayer()
     raise ValueError(f"AUDIO_BACKEND desconocido: {backend}")

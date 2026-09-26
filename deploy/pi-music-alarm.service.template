@@ -1,0 +1,33 @@
+# Plantilla de servicio systemd para pi-music-alarm.
+#
+# No la copies tal cual: deploy/install-service.sh sustituye @USER@, @GROUP@ y
+# @APP_DIR@ por tu usuario y la carpeta donde clonaste el repositorio, y la
+# instala en /etc/systemd/system/pi-music-alarm.service.
+
+[Unit]
+Description=pi-music-alarm (despertador Flask + scheduler)
+Documentation=file://@APP_DIR@/README.md
+# Esperar a tener red y, si está activado systemd-time-wait-sync, la hora
+# sincronizada por NTP (la Pi no tiene reloj con pila).
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target sound.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+# Acceso a la tarjeta de sonido (aplay).
+SupplementaryGroups=audio
+WorkingDirectory=@APP_DIR@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@APP_DIR@/.venv/bin/python @APP_DIR@/serve.py
+Restart=on-failure
+RestartSec=5
+
+# Endurecimiento ligero (no impide escribir en instance/ ni leer sounds/).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+# Normaliza finales de línea: el repo se usa en Windows y en Raspberry Pi OS.
+* text=auto
+# Estos ficheros se ejecutan/leen en Linux: siempre LF, aunque se editen en Windows.
+*.sh text eol=lf
+*.template text eol=lf
+*.service text eol=lf
+.env.example text eol=lf
+*.wav binary
