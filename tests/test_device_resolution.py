@@ -100,6 +100,7 @@ class ResolverTest(unittest.TestCase):
         self.client.get_devices.return_value = [TABLET, GROOVE]
         self.assertTrue(self.player.play(PLAYLIST_URI, volume=20))
         self.assertEqual(self.client.method_calls, [
+            mock.call.get_track_count(PLAYLIST_URI),  # nº de pistas (inicio aleatorio); el mock no da un número: sin offset
             mock.call.get_devices(),
             mock.call.transfer_playback("groove-1", play=False),
             mock.call.set_volume(20, "groove-1"),
@@ -260,6 +261,7 @@ class ManagerResolutionTest(unittest.TestCase):
         self.client.get_devices.return_value = [TABLET, GROOVE_NEW]
         self.assertEqual(manager.start(ALARM), "spotify")
         self.assertEqual(self.client.method_calls, [
+            mock.call.get_track_count(PLAYLIST_URI),  # nº de pistas (inicio aleatorio); el mock no da un número: sin offset
             mock.call.get_devices(),
             mock.call.transfer_playback("groove-2", play=False),
             mock.call.set_volume(20, "groove-2"),

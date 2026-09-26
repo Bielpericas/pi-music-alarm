@@ -106,6 +106,7 @@ class SpotifyAlarmPlayerTest(unittest.TestCase):
         self.select_device()
         self.assertTrue(self.player.play(PLAYLIST_URI))
         self.assertEqual(self.client.method_calls, [
+            mock.call.get_track_count(PLAYLIST_URI),  # nº de pistas (inicio aleatorio); el mock no da un número: sin offset
             mock.call.get_devices(),  # resolución del dispositivo (fase dispositivo resiliente)
             mock.call.transfer_playback("dev", play=False),
             mock.call.play("dev", uri=PLAYLIST_URI),
@@ -274,6 +275,7 @@ class AlarmSourceAppTest(unittest.TestCase):
         self.create_spotify()
         self.assertEqual(self.check(), ["Música"])
         self.assertEqual(self.spotify.method_calls, [
+            mock.call.get_track_count(PLAYLIST_URI),  # nº de pistas (inicio aleatorio); el mock no da un número: sin offset
             mock.call.get_devices(),  # resolución del dispositivo (fase dispositivo resiliente)
             mock.call.transfer_playback("dev", play=False),
             mock.call.play("dev", uri=PLAYLIST_URI),
@@ -318,7 +320,8 @@ class AlarmSourceAppTest(unittest.TestCase):
         self.create_spotify()
         self.assertIn("reproduciendo en Spotify", self.probar())
         self.app.extensions["playback"].stop()  # cancela el fade-in que arranca Probar
-        self.assertEqual(self.spotify.method_calls[:4], [
+        self.assertEqual(self.spotify.method_calls[:5], [
+            mock.call.get_track_count(PLAYLIST_URI),  # nº de pistas (inicio aleatorio); el mock no da un número: sin offset
             mock.call.get_devices(),  # resolución del dispositivo (fase dispositivo resiliente)
             mock.call.transfer_playback("dev", play=False),
             mock.call.set_volume(20, "dev"),  # volumen inicial por defecto (fase de volumen)

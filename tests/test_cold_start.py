@@ -128,6 +128,7 @@ class ColdStartTest(unittest.TestCase):
         # El reintento vuelve a resolver el dispositivo y repite el orden completo.
         names = [c[0] for c in fake.client.method_calls]
         self.assertEqual(names, [
+            "get_track_count",  # nº de pistas (inicio aleatorio); el mock no da un número: sin offset
             "get_devices", "transfer_playback", "get_devices", "set_volume", "play",
             "get_devices", "transfer_playback", "set_volume", "play",
         ])
@@ -169,7 +170,8 @@ class ColdStartTest(unittest.TestCase):
         self.assertTrue(player.play(PLAYLIST_URI, volume=20))
         self.assertEqual(self.waits, [1])  # una espera corta hasta verlo activo
         names = [c[0] for c in fake.client.method_calls]
-        self.assertEqual(names, ["get_devices", "transfer_playback", "get_devices",
+        self.assertEqual(names, ["get_track_count", "get_devices", "transfer_playback",
+                                 "get_devices",
                                  "get_devices", "set_volume", "play"])
 
     def test_restricted_device_is_not_ready(self):
@@ -193,7 +195,7 @@ class ColdStartTest(unittest.TestCase):
         fake = FakeSpotify(groove(active=True))
         self.assertTrue(self.player(fake).play(PLAYLIST_URI))
         self.assertEqual([c[0] for c in fake.client.method_calls],
-                         ["get_devices", "transfer_playback", "play"])
+                         ["get_track_count", "get_devices", "transfer_playback", "play"])
 
     def test_device_vanishing_after_transfer_is_resolved_again(self):
         fake = FakeSpotify(groove())

@@ -28,6 +28,7 @@ algo falló (el motivo queda en el log), para que se use el WAV de respaldo.
 `stop()` pausa el dispositivo donde empezó a sonar.
 """
 import logging
+import random
 import threading
 
 import db
@@ -122,7 +123,7 @@ def choose_device(devices, saved_id, preferred_name):
 
 class SpotifyAlarmPlayer:
     def __init__(self, client, database, preferred_name="", retry_delays=RETRY_DELAYS,
-                 wait=None, ready_delays=READY_DELAYS):
+                 wait=None, ready_delays=READY_DELAYS, rng=None):
         self.client = client
         self.database = database
         self.preferred_name = preferred_name  # si no hay nombre guardado (SPOTIFY_DEVICE_NAME)
@@ -132,6 +133,7 @@ class SpotifyAlarmPlayer:
         # wait(segundos) -> True si se interrumpió durante la espera.
         self._wait = wait or self._interrupted.wait
         self._device_id = None  # dispositivo donde empezó a sonar la última alarma
+        self._rng = rng or random.Random()  # inyectable en tests
 
     def interrupt(self):
         """Corta los reintentos en curso (lo llama STOP / snooze sin esperar)."""
@@ -192,6 +194,9 @@ class SpotifyAlarmPlayer:
             raise SpotifyError("No hay ningún dispositivo de Spotify seleccionado.")
 
         label = f"«{name}»" if name else "el dispositivo guardado"
+        # Álbum / playlist: pista inicial aleatoria, elegida una vez por cada vez
+        # que suena la alarma (los reintentos usan la misma; un snooze, otra).
+        position = self._random_position(uri)
         attempts = len(self.retry_delays)
         last_error = None
         for attempt, delay in enumerate(self.retry_delays, 1):
@@ -210,7 +215,7 @@ class SpotifyAlarmPlayer:
                     except Exception as exc:
                         logger.warning("No se pudo fijar el volumen inicial (%s%%): %s",
                                        volume, exc)
-                self.client.play(device["id"], uri=uri)
+                self._play(device["id"], uri, position)
                 return device["id"]
             except PlaybackInterrupted:
                 raise
@@ -227,6 +232,43 @@ class SpotifyAlarmPlayer:
                                    label, attempt, attempts, exc)
         raise DeviceUnavailable(
             f"{label} no está disponible tras {attempts} intentos: {last_error}")
+
+    def _random_position(self, uri):
+        """Índice aleatorio de pista para álbumes y playlists, o None.
+
+        Si no se puede saber cuántas pistas hay (playlist ajena, error de red,
+        permisos...), None: se empieza por la primera, como siempre.
+        """
+        kind = uri.split(":")[1] if uri and uri.count(":") == 2 else ""
+        if kind not in ("album", "playlist"):
+            return None
+        try:
+            total = self.client.get_track_count(uri)
+        except Exception as exc:
+            logger.warning("No se pudo saber cuántas pistas tiene %s (%s); "
+                           "se empieza por la primera", uri, exc)
+            return None
+        if not isinstance(total, int) or isinstance(total, bool) or total < 1:
+            logger.info("Número de pistas de %s desconocido; se empieza por la primera", uri)
+            return None
+        position = self._rng.randrange(total)
+        logger.info("Inicio aleatorio: pista %d de %d", position + 1, total)
+        return position
+
+    def _play(self, device_id, uri, position):
+        """Reproduce; con posición aleatoria si la hay. Si Spotify rechaza la
+        posición (400), empieza por la primera pista en vez de fallar."""
+        if position is None:
+            self.client.play(device_id, uri=uri)
+            return
+        try:
+            self.client.play(device_id, uri=uri, offset=position)
+        except SpotifyError as exc:
+            if exc.status != 400:
+                raise
+            logger.warning("Spotify rechazó la pista inicial %d (%s); se empieza por la primera",
+                           position + 1, exc)
+            self.client.play(device_id, uri=uri)
 
     def _pause(self, seconds):
         """Espera interrumpible: STOP / snooze la cortan al momento."""

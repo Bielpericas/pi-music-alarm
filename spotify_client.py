@@ -202,14 +202,43 @@ class SpotifyClient:
     def transfer_playback(self, device_id, play=False):
         self._api("PUT", "/me/player", body={"device_ids": [device_id], "play": play})
 
-    def play(self, device_id=None, uri=None):
-        """Reanuda, o empieza `uri` (track, album o playlist) si se indica."""
+    def play(self, device_id=None, uri=None, offset=None):
+        """Reanuda, o empieza `uri` (track, album o playlist) si se indica.
+
+        `offset` (índice desde 0) empieza un álbum o playlist directamente en
+        esa pista (offset.position); con una canción suelta se ignora.
+        """
         body = None
         if uri:
             kind = parse_spotify_uri(uri).split(":")[1]
             # Un track va en "uris"; álbumes y playlists son un "context_uri".
             body = {"uris": [uri]} if kind == "track" else {"context_uri": uri}
+            if offset is not None and kind != "track":
+                body["offset"] = {"position": int(offset)}
         self._api("PUT", "/me/player/play", params=_device(device_id), body=body)
+
+    def get_track_count(self, uri):
+        """Número de pistas de un álbum o playlist (None si no se sabe).
+
+        - Álbum: GET /albums/{id} -> total_tracks.
+        - Playlist: GET /playlists/{id}?fields=items.total (desde febrero de
+          2026 "tracks" se llama "items"; se acepta también el nombre antiguo).
+          Spotify solo da el contenido de playlists propias o colaborativas.
+        """
+        kind, item_id = parse_spotify_uri(uri).split(":")[1:]
+        if kind == "album":
+            data = self._api("GET", f"/albums/{item_id}") or {}
+            total = data.get("total_tracks")
+            if total is None:
+                total = (data.get("tracks") or {}).get("total")
+        elif kind == "playlist":
+            data = self._api("GET", f"/playlists/{item_id}", params={"fields": "items.total"}) or {}
+            total = (data.get("items") or {}).get("total")
+            if total is None:
+                total = (data.get("tracks") or {}).get("total")
+        else:
+            return None
+        return total if isinstance(total, int) and not isinstance(total, bool) else None
 
     def pause(self, device_id=None):
         self._api("PUT", "/me/player/pause", params=_device(device_id))

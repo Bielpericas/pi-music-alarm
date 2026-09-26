@@ -156,6 +156,7 @@ class SpotifyAlarmPlayerVolumeTest(unittest.TestCase):
     def test_starts_at_initial_volume_before_playing(self):
         self.assertTrue(self.player.play(PLAYLIST_URI, volume=10))
         self.assertEqual(self.client.method_calls, [
+            mock.call.get_track_count(PLAYLIST_URI),  # nº de pistas (inicio aleatorio); el mock no da un número: sin offset
             mock.call.get_devices(),
             mock.call.transfer_playback("dev", play=False),
             mock.call.set_volume(10, "dev"),

@@ -365,6 +365,13 @@ Cuando se dispara, o al pulsar **Probar**, que ejecuta exactamente el mismo fluj
 2. Se transfiere la reproducción a ese dispositivo.
 3. Se reproduce el contenido: una canción va en `uris`; un álbum o playlist, como `context_uri`.
 
+**Inicio aleatorio**: con un álbum o una playlist, cada vez que suena la alarma (también tras un
+snooze) Groove pregunta cuántas pistas tiene y empieza directamente en una al azar (`offset.position`),
+sin reproducir antes la primera. Una canción suelta suena tal cual. Si no se puede saber el número de
+pistas, se empieza por la primera como antes. Pasa con playlists que no son tuyas ni colaborativas
+(Spotify no da su contenido desde febrero de 2026) o si hay un error de red. Los reintentos de Groove
+"en frío" usan la misma pista elegida.
+
 Si algo falla (Spotify sin configurar o sin vincular, ningún dispositivo seleccionado, 403, 404,
 429, sin red…), el motivo queda en `instancelarms.log` y **suena el WAV local**.
 
