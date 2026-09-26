@@ -6,6 +6,7 @@ from flask import (
 )
 
 import db
+from spotify_player import DEVICE_ID_KEY, DEVICE_NAME_KEY
 from spotify_client import (
     SpotifyAuthError,
     SpotifyConnectionError,
@@ -17,9 +18,6 @@ from spotify_client import (
 )
 
 bp = Blueprint("spotify", __name__, url_prefix="/spotify")
-
-DEVICE_ID_KEY = "spotify_device_id"
-DEVICE_NAME_KEY = "spotify_device_name"
 
 
 def client():

@@ -8,7 +8,11 @@ from flask import current_app, g
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 # Columnas añadidas después de la primera versión: (nombre, definición).
-MIGRATIONS = [("last_triggered", "TEXT")]
+MIGRATIONS = [
+    ("last_triggered", "TEXT"),
+    ("source", "TEXT NOT NULL DEFAULT 'local'"),
+    ("spotify_uri", "TEXT"),
+]
 
 
 def connect(database):
@@ -63,13 +67,24 @@ def get_alarm(alarm_id):
     return get_db().execute("SELECT * FROM alarms WHERE id = ?", (alarm_id,)).fetchone()
 
 
-def create_alarm(name, time, days):
+def create_alarm(name, time, days, source="local", spotify_uri=None):
     db = get_db()
     db.execute(
-        "INSERT INTO alarms (name, time, days) VALUES (?, ?, ?)",
-        (name, time, ",".join(str(d) for d in days)),
+        "INSERT INTO alarms (name, time, days, source, spotify_uri) VALUES (?, ?, ?, ?, ?)",
+        (name, time, ",".join(str(d) for d in days), source, spotify_uri),
     )
     db.commit()
+
+
+def update_alarm(alarm_id, name, time, days, source="local", spotify_uri=None):
+    db = get_db()
+    cur = db.execute(
+        "UPDATE alarms SET name = ?, time = ?, days = ?, source = ?, spotify_uri = ?"
+        " WHERE id = ?",
+        (name, time, ",".join(str(d) for d in days), source, spotify_uri, alarm_id),
+    )
+    db.commit()
+    return cur.rowcount > 0
 
 
 def toggle_alarm(alarm_id):
@@ -102,6 +117,15 @@ def set_setting(key, value):
 
 
 # --- Consultas del scheduler (usan su propia conexión, fuera de peticiones HTTP) ---
+
+def read_setting(database, key, default=None):
+    conn = connect(database)
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+    finally:
+        conn.close()
+
 
 def enabled_alarms_at(conn, hhmm):
     return conn.execute(

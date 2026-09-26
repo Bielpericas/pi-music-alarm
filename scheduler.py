@@ -44,19 +44,39 @@ def setup_logging(log_path):
         logger.addHandler(handler)
 
 
-def fire_alarm(name, manual=False, player=None):
-    """Acción de la alarma: la registra y pide al reproductor que suene.
+def fire_alarm(alarm, manual=False, player=None, spotify=None):
+    """Acción de la alarma: la registra y hace que suene.
 
-    El scheduler no sabe nada de audio: solo llama a `player.play()`, que no
-    bloquea. Cualquier fallo se registra y no interrumpe el scheduler.
+    - Fuente "local": `player.play()` (el WAV), igual que siempre.
+    - Fuente "spotify": `spotify.play(uri)`; si devuelve False o no hay
+      Spotify disponible, suena el WAV local como respaldo.
+
+    El scheduler no sabe nada de audio ni de HTTP: solo habla con esos dos
+    objetos. Cualquier fallo se registra y no interrumpe el scheduler.
+    Devuelve lo que ha sonado: "local", "spotify" o "fallback".
     """
+    name = alarm["name"]
     suffix = " (prueba manual)" if manual else ""
     logger.info("ALARMA ACTIVADA: %s%s", name, suffix)
+
+    if alarm["source"] == "spotify":
+        if spotify is not None and alarm["spotify_uri"]:
+            try:
+                if spotify.play(alarm["spotify_uri"]):
+                    return "spotify"
+            except Exception:
+                logger.exception("Spotify falló al disparar «%s»", name)
+        logger.warning("Usando el sonido local como respaldo para «%s»", name)
+        outcome = "fallback"
+    else:
+        outcome = "local"
+
     if player is not None:
         try:
             player.play()
         except Exception:
             logger.exception("El reproductor falló al disparar «%s»", name)
+    return outcome
 
 
 def alarm_matches_day(alarm, now):
@@ -64,8 +84,12 @@ def alarm_matches_day(alarm, now):
     return not days or str(now.weekday()) in days.split(",")
 
 
-def check_alarms(database, now=None, player=None):
-    """Dispara las alarmas que tocan en el minuto `now`. Devuelve sus nombres."""
+def check_alarms(database, now=None, player=None, spotify=None):
+    """Dispara las alarmas que tocan en el minuto `now`. Devuelve sus nombres.
+
+    APScheduler ejecuta este job en su pool de hilos: si Spotify tarda (las
+    peticiones tienen timeout), no se bloquea el bucle del scheduler.
+    """
     now = (now or datetime.now()).replace(second=0, microsecond=0)
     minute_key = now.strftime("%Y-%m-%d %H:%M")
     fired = []
@@ -75,20 +99,20 @@ def check_alarms(database, now=None, player=None):
             if alarm_matches_day(alarm, now) and db.claim_trigger(
                 conn, alarm["id"], minute_key
             ):
-                fire_alarm(alarm["name"], player=player)
+                fire_alarm(alarm, player=player, spotify=spotify)
                 fired.append(alarm["name"])
     finally:
         conn.close()
     return fired
 
 
-def start_scheduler(app, player=None):
+def start_scheduler(app, player=None, spotify=None):
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
         check_alarms,
         CronTrigger(second=0),
         args=[app.config["DATABASE"]],
-        kwargs={"player": player},
+        kwargs={"player": player, "spotify": spotify},
         id="check_alarms",
         max_instances=1,
         coalesce=True,

@@ -16,6 +16,7 @@ Referencias (revisadas en septiembre de 2026):
 import base64
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -194,8 +195,14 @@ class SpotifyClient:
     def transfer_playback(self, device_id, play=False):
         self._api("PUT", "/me/player", body={"device_ids": [device_id], "play": play})
 
-    def play(self, device_id=None):
-        self._api("PUT", "/me/player/play", params=_device(device_id))
+    def play(self, device_id=None, uri=None):
+        """Reanuda, o empieza `uri` (track, album o playlist) si se indica."""
+        body = None
+        if uri:
+            kind = parse_spotify_uri(uri).split(":")[1]
+            # Un track va en "uris"; álbumes y playlists son un "context_uri".
+            body = {"uris": [uri]} if kind == "track" else {"context_uri": uri}
+        self._api("PUT", "/me/player/play", params=_device(device_id), body=body)
 
     def pause(self, device_id=None):
         self._api("PUT", "/me/player/pause", params=_device(device_id))
@@ -321,6 +328,31 @@ class SpotifyClient:
         return SpotifyRateLimitError(
             f"Demasiadas peticiones a Spotify; espera {retry_after} s.", retry_after
         )
+
+
+SPOTIFY_KINDS = ("track", "album", "playlist")
+_URI_RE = re.compile(r"^spotify:(track|album|playlist):([A-Za-z0-9]{22})$")
+# https://open.spotify.com/[intl-xx/]<tipo>/<id>[?si=...]
+_URL_RE = re.compile(
+    r"^https?://open\.spotify\.com/(?:intl-[a-z]{2}(?:-[a-z]{2})?/)?"
+    r"(track|album|playlist)/([A-Za-z0-9]{22})/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def parse_spotify_uri(text):
+    """Convierte una URL de open.spotify.com o una URI en "spotify:<tipo>:<id>".
+
+    Solo acepta track, album y playlist. Lanza ValueError si no es válida.
+    """
+    text = (text or "").strip()
+    match = _URI_RE.match(text) or _URL_RE.match(text)
+    if not match:
+        raise ValueError(
+            "Pega una URL de open.spotify.com o una URI spotify: de una canción, "
+            "álbum o playlist."
+        )
+    return f"spotify:{match.group(1).lower()}:{match.group(2)}"
 
 
 def _device(device_id):

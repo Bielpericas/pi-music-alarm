@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS alarms (
     days TEXT NOT NULL DEFAULT '',   -- "0,2,4" (0 = lunes); vacío = una vez
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_triggered TEXT              -- "YYYY-MM-DD HH:MM" del último disparo programado
+    last_triggered TEXT,             -- "YYYY-MM-DD HH:MM" del último disparo programado
+    source TEXT NOT NULL DEFAULT 'local',  -- 'local' (WAV) o 'spotify'
+    spotify_uri TEXT                 -- "spotify:<track|album|playlist>:<id>"
 );
 
 -- Tokens de Spotify (una sola fila). Viven en instance/, fuera del repositorio.

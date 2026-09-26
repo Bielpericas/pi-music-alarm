@@ -13,11 +13,15 @@
           <span class="alarm-time">{{ alarm.time }}</span>
           <span class="alarm-name">{{ alarm.name }}</span>
           <span class="alarm-days">{{ alarm.days | format_days }}</span>
+          <span class="alarm-source">
+            <span class="badge {% if alarm.source == 'spotify' %}badge-spotify{% endif %}">{{ alarm | describe_source }}</span>
+          </span>
           {% if alarm.last_triggered %}
             <span class="alarm-last">Última vez: {{ alarm.last_triggered }}</span>
           {% endif %}
         </div>
         <div class="alarm-actions">
+          <a class="btn" href="{{ url_for('edit_alarm', alarm_id=alarm.id) }}">Editar</a>
           <form method="post" action="{{ url_for('test_alarm', alarm_id=alarm.id) }}">
             <button class="btn" type="submit">Probar</button>
           </form>

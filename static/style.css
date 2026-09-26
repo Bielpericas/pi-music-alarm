@@ -144,3 +144,13 @@ code { overflow-wrap: anywhere; }
 .device form { margin: 0; }
 .device-info { display: flex; flex-direction: column; min-width: 0; }
 .device-name { font-weight: 600; overflow-wrap: anywhere; }
+
+/* Fuente de sonido de la alarma */
+.alarm-source { margin-top: 4px; }
+.badge-spotify { background: #1db954; border-color: #1db954; color: #04130a; }
+.source-options { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.source-option { display: flex; align-items: center; gap: 6px; min-height: 44px; }
+.source-option input { width: 20px; height: 20px; }
+.spotify-field { display: flex; flex-direction: column; gap: 6px; }
+.spotify-field[hidden] { display: none; }
+.spotify-field p { margin: 0; }

@@ -5,7 +5,8 @@ Despertador ligero pensado para una **Raspberry Pi Zero 2 W**. Interfaz web (pen
 Estado actual: gestión de alarmas (crear, listar, activar/desactivar, borrar, probar) y un
 scheduler que las dispara a su hora. Al dispararse, la alarma reproduce un WAV local y escribe
 `ALARMA ACTIVADA: <nombre>` en la consola y en `instance\alarms.log`.
-También se puede vincular una cuenta de Spotify y controlar sus dispositivos (todavía sin relación con las alarmas).
+Cada alarma puede sonar con el WAV local o con Spotify (canción, álbum o playlist); si Spotify falla,
+suena el WAV local como respaldo.
 
 ## Requisitos
 
@@ -108,8 +109,7 @@ python -m unittest discover tests -v
 - Antes de reproducir se valida la cabecera del WAV. Si el fichero no existe o no es válido,
   se registra el error y la alarma sigue su curso.
 - El scheduler y el botón **Probar** solo llaman a `player.play()`: no saben nada de audio.
-  `create_player()` elige la implementación según `AUDIO_BACKEND` (`local` o `none`). Aquí se
-  enchufará un futuro `SpotifyAudioPlayer`.
+  `create_player()` elige la implementación según `AUDIO_BACKEND` (`local` o `none`).
 
 ### Probar una alarma programada
 
@@ -121,11 +121,11 @@ python -m unittest discover tests -v
 
 La hora que se usa es la del sistema. En la Pi, configura la zona horaria con `sudo raspi-config`.
 
-## Spotify (fase 1: vincular cuenta y controlar dispositivos)
+## Spotify
 
-De momento Spotify **no** está conectado con las alarmas. La sección **Spotify** (enlace arriba a la
-derecha) permite vincular tu cuenta, ver tus dispositivos Spotify Connect, elegir uno y probar
-Transferir / Play / Pause.
+La sección **Spotify** (enlace arriba a la derecha) permite vincular tu cuenta, ver tus dispositivos
+Spotify Connect, elegir uno y probar Transferir / Play / Pause. Cada alarma puede usar Spotify como
+sonido (ver [Alarmas con Spotify](#alarmas-con-spotify)).
 
 Requisitos de Spotify (desde febrero de 2026): el dueño de la app de desarrollo necesita **Spotify
 Premium**, y los endpoints de control de reproducción solo funcionan con cuentas Premium.
@@ -176,6 +176,24 @@ Si algo falla, la página muestra el motivo: 403 = sin Premium o usuario fuera d
   errores a mensajes para la interfaz.
 - Scopes pedidos: `user-read-playback-state` y `user-modify-playback-state`.
 
+### Alarmas con Spotify
+
+Al crear o editar una alarma, en **Sonido** elige **Local (WAV)** o **Spotify**. Con Spotify, pega la
+URL (`https://open.spotify.com/playlist/...`, con o sin `?si=...`) o la URI (`spotify:playlist:...`)
+de una canción, un álbum o una playlist. Se guarda siempre como URI.
+
+Cuando se dispara, o al pulsar **Probar**, que ejecuta exactamente el mismo flujo:
+
+1. Se lee el dispositivo seleccionado en la sección Spotify.
+2. Se transfiere la reproducción a ese dispositivo.
+3. Se reproduce el contenido: una canción va en `uris`; un álbum o playlist, como `context_uri`.
+
+Si algo falla (Spotify sin configurar o sin vincular, ningún dispositivo seleccionado, 403, 404,
+429, sin red…), el motivo queda en `instancelarms.log` y **suena el WAV local**.
+
+Código: `spotify_player.py` (`SpotifyAlarmPlayer`) hace ese flujo usando `spotify_client.py`.
+`scheduler.fire_alarm()` solo elige entre el WAV y `SpotifyAlarmPlayer`, y aplica el respaldo; no hace HTTP.
+
 ## Estructura
 
 ```
@@ -185,6 +203,7 @@ scheduler.py        # APScheduler: revisa alarmas cada minuto y las dispara
 audio_player.py     # AudioPlayer / LocalAudioPlayer (winsound o aplay)
 spotify_client.py   # todo el HTTP con Spotify: OAuth, refresh, errores
 spotify_views.py    # rutas /spotify/...
+spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> reproducir
 .env.example        # plantilla de configuración (copiar a .env)
 schema.sql          # tablas "alarms", "spotify_auth" y "settings"
 sounds/             # alarm.wav (no se sube a git)
@@ -196,11 +215,11 @@ instance/           # base de datos y log local (no se suben a git)
 ```
 
 Cada alarma guarda `name`, `time` (`HH:MM`), `days` (p. ej. `"0,2,4"`, donde 0 = lunes y vacío = una vez),
-`enabled` y `last_triggered`.
+`enabled`, `last_triggered`, `source` (`local` o `spotify`) y `spotify_uri`.
 
 ## Próximos pasos
 
-- `SpotifyAudioPlayer`: usar Spotify como sonido de alarma (con el WAV local de respaldo).
+- Buscar canciones o playlists desde la app, en vez de pegar la URL.
 - Volumen progresivo y botón para parar o posponer la alarma.
 - En la Pi: servir con un servidor de producción ligero (p. ej. `waitress`) y un servicio `systemd`.
 - Protección CSRF y un `SECRET_KEY` real (variable de entorno `SECRET_KEY`) si la app se expone fuera de la red local.

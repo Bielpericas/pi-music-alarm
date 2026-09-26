@@ -1,7 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Nueva alarma · Despertador{% endblock %}
+{% set editing = alarm_id is not none %}
+{% block title %}{{ "Editar alarma" if editing else "Nueva alarma" }} · Despertador{% endblock %}
 {% block content %}
-<h1>Nueva alarma</h1>
+<h1>{{ "Editar alarma" if editing else "Nueva alarma" }}</h1>
 
 {% if errors %}
   <ul class="errors">
@@ -27,6 +28,30 @@
           <span>{{ day }}</span>
         </label>
       {% endfor %}
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Sonido</legend>
+    <div class="source-options">
+      <label class="source-option">
+        <input type="radio" name="source" value="local"
+               {% if data.source != "spotify" %}checked{% endif %}>
+        <span>Local (WAV)</span>
+      </label>
+      <label class="source-option">
+        <input type="radio" name="source" value="spotify"
+               {% if data.source == "spotify" %}checked{% endif %}>
+        <span>Spotify</span>
+      </label>
+    </div>
+    <div class="spotify-field" data-spotify-field>
+      <label for="spotify_uri">URL o URI de Spotify (canción, álbum o playlist)</label>
+      <input id="spotify_uri" name="spotify_uri" type="text" autocomplete="off"
+             value="{{ data.spotify_uri or '' }}"
+             placeholder="https://open.spotify.com/playlist/...">
+      <p class="muted small">Se reproduce en el dispositivo elegido en la sección Spotify.
+        Si Spotify falla, suena el WAV local.</p>
     </div>
   </fieldset>
 
