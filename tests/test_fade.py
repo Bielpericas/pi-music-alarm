@@ -150,11 +150,13 @@ class SpotifyAlarmPlayerVolumeTest(unittest.TestCase):
         conn.close()
         self.client = mock.Mock(spec=SpotifyClient)
         self.client.is_configured = True
+        self.client.get_devices.return_value = [{"id": "dev", "name": "PC", "type": "Computer", "is_active": True}]
         self.player = SpotifyAlarmPlayer(self.client, database)
 
     def test_starts_at_initial_volume_before_playing(self):
         self.assertTrue(self.player.play(PLAYLIST_URI, volume=10))
         self.assertEqual(self.client.method_calls, [
+            mock.call.get_devices(),
             mock.call.transfer_playback("dev", play=False),
             mock.call.set_volume(10, "dev"),
             mock.call.play("dev", uri=PLAYLIST_URI),
@@ -306,9 +308,11 @@ class VolumeFormTest(unittest.TestCase):
         self.db_path = os.path.join(self.tmpdir.name, "t.db")
         self.spotify = mock.Mock(spec=SpotifyClient)
         self.spotify.is_configured = True
+        self.spotify.get_devices.return_value = [{"id": "dev", "name": "PC", "type": "Computer", "is_active": True}]
         self.app = create_app(
             {"TESTING": True, "SECRET_KEY": "test", "DATABASE": self.db_path,
-             "ALARM_LOG": os.path.join(self.tmpdir.name, "alarms.log")},
+             "ALARM_LOG": os.path.join(self.tmpdir.name, "alarms.log"),
+             "SPOTIFY_RETRY_DELAYS": (0, 0, 0, 0)},  # reintentos sin esperas reales
             player=mock.Mock(spec=AudioPlayer), spotify=self.spotify,
         )
         self.fades = []

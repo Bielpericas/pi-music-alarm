@@ -47,12 +47,13 @@ def volume_settings(alarm):
     return start, fade_plan(start, end, seconds)
 
 
-def play_alarm_sound(alarm, player=None, spotify=None, volume=None):
-    """Hace sonar la alarma y devuelve "local", "spotify" o "fallback".
+def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=None):
+    """Hace sonar la alarma y devuelve "local", "spotify", "fallback" o "cancelled".
 
     - Fuente "local": `player.play()` (el WAV). `volume` no se usa todavía.
     - Fuente "spotify": `spotify.play(uri)` (con `volume` inicial si se da);
-      si falla o no hay Spotify, el WAV.
+      si falla o no hay Spotify, el WAV. Si mientras tanto se pulsó STOP o
+      snooze (`interrupted`), no suena nada: "cancelled".
     Nunca lanza excepciones: los fallos se registran.
     """
     name = alarm["name"]
@@ -65,6 +66,9 @@ def play_alarm_sound(alarm, player=None, spotify=None, volume=None):
                     return "spotify"
             except Exception:
                 logger.exception("Spotify falló al disparar «%s»", name)
+        if interrupted is not None and interrupted.is_set():
+            logger.info("Arranque de «%s» cancelado antes de sonar", name)
+            return "cancelled"
         logger.warning("Usando el sonido local como respaldo para «%s»", name)
         outcome = "fallback"
     else:
@@ -94,7 +98,8 @@ def timer_schedule_once(run_at, callback):
 class ActiveAlarm:
     alarm: dict           # copia de la alarma (id, name, time, source, spotify_uri)
     started_at: datetime
-    via: str              # "local", "spotify" o "fallback"
+    via: str              # "local", "spotify", "fallback"; "connecting" mientras se
+                          # busca el dispositivo; "cancelled" si STOP llegó antes de sonar
     manual: bool = False  # disparada con Probar
     snoozes: int = 0      # cuántas veces se ha pospuesto ya
 
@@ -127,6 +132,7 @@ class AlarmPlaybackManager:
         self._clock = clock
         self._lock = threading.RLock()
         self._active: Optional[ActiveAlarm] = None
+        self._starting = None                 # Event del start en curso (para interrumpirlo)
         self._pending = {}                    # alarm_id -> (PendingSnooze, cancel)
         self._pending_view = ()
 
@@ -160,28 +166,44 @@ class AlarmPlaybackManager:
                             alarm["name"], previous.alarm["name"])
                 if previous.via != "spotify":
                     self._stop_local()
+            started_at = self._clock()
+            starting = threading.Event()
+            self._starting = starting
+            if alarm["source"] == "spotify":
+                # Visible (con STOP) mientras se busca el dispositivo y se reintenta.
+                self._active = ActiveAlarm(alarm, started_at, "connecting", manual, snoozes)
             initial_volume, plan = volume_settings(alarm)
-            via = play_alarm_sound(alarm, self.player, self.spotify, volume=initial_volume)
+            try:
+                via = play_alarm_sound(alarm, self.player, self.spotify,
+                                       volume=initial_volume, interrupted=starting)
+            finally:
+                self._starting = None
             # Si la anterior sonaba en Spotify y la nueva no la ha reemplazado
             # allí, se pausa. (Pausar y luego reproducir en Spotify podría
             # llegar desordenado, por eso no se pausa si la nueva es Spotify.)
             if previous is not None and previous.via == "spotify" and via != "spotify":
                 self._stop_spotify()
 
-            self._active = ActiveAlarm(alarm, self._clock(), via, manual, snoozes)
+            self._active = ActiveAlarm(alarm, started_at, via, manual, snoozes)
             if via == "spotify" and plan:
                 self._start_fade(plan)
             return via
 
     def stop(self):
         """Para la alarma que suena. Devuelve StopResult, o None si no sonaba nada."""
+        self._interrupt_start()
         with self._lock:
             active = self._active
             if active is None:
                 return None
             self._active = None
             self._cancel_fade()  # antes de pausar: que no suba el volumen tras STOP
-            silenced = self._stop_spotify() if active.via == "spotify" else self._stop_local()
+            if active.via == "spotify":
+                silenced = self._stop_spotify()
+            elif active.via in ("local", "fallback"):
+                silenced = self._stop_local()
+            else:
+                silenced = True  # "cancelled": no llegó a sonar nada
             logger.info("ALARMA DETENIDA: %s", active.alarm["name"])
             return StopResult(active, silenced)
 
@@ -190,6 +212,7 @@ class AlarmPlaybackManager:
 
         Devuelve el PendingSnooze creado, o None si no sonaba nada.
         """
+        self._interrupt_start()
         with self._lock:
             result = self.stop()
             if result is None:
@@ -218,6 +241,20 @@ class AlarmPlaybackManager:
                 self.stop()
 
     # --- Internos ---
+
+    def _interrupt_start(self):
+        """Sin coger el lock: si un start está buscando el dispositivo de
+        Spotify (reintentos), lo corta al momento para que STOP/snooze no
+        tengan que esperar hasta 12 s."""
+        starting = self._starting
+        if starting is None:
+            return
+        starting.set()
+        if self.spotify is not None:
+            try:
+                self.spotify.interrupt()
+            except Exception:
+                logger.exception("No se pudo interrumpir la búsqueda del dispositivo")
 
     def _start_fade(self, plan):
         try:

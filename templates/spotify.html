@@ -70,6 +70,11 @@
         Dispositivo seleccionado: <strong>{{ selected_name or selected_id }}</strong>
         {% if not selected_available %}(no disponible ahora){% endif %}
       </p>
+      {% if selected_name %}
+        <p class="muted small">Las alarmas usan «{{ selected_name }}» aunque cambie de ID (por
+          ejemplo, al reiniciar Raspotify): lo buscan por nombre y reintentan unos segundos
+          si todavía no aparece.</p>
+      {% endif %}
       <div class="alarm-actions">
         <form method="post" action="{{ url_for('spotify.transfer') }}">
           <button class="btn" type="submit">Transferir</button>

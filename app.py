@@ -12,7 +12,7 @@ import spotify_views
 from audio_player import create_player
 from playback import AlarmPlaybackManager
 from spotify_client import create_spotify_client, parse_spotify_uri
-from spotify_player import SpotifyAlarmPlayer
+from spotify_player import RETRY_DELAYS, SpotifyAlarmPlayer
 
 DEFAULT_SOUND = Path(__file__).parent / "sounds" / "alarm.wav"
 DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
@@ -108,7 +108,7 @@ def describe_source(alarm):
 
 def playback_key(active, snoozes):
     """Huella del estado de reproducción: si cambia, la página se recarga."""
-    parts = [f"{active.id}@{active.started_at.isoformat()}" if active else "-"]
+    parts = [f"{active.id}@{active.started_at.isoformat()}@{active.via}" if active else "-"]
     parts += [f"{p.alarm['id']}@{p.run_at.isoformat()}" for p in snoozes]
     return "|".join(parts)
 
@@ -139,6 +139,9 @@ def create_app(config=None, player=None, spotify=None):
         ALSA_DEVICE=os.environ.get("ALSA_DEVICE", ""),  # solo Linux (aplay -D)
         SPOTIFY_CLIENT_ID=os.environ.get("SPOTIFY_CLIENT_ID", ""),
         SPOTIFY_CLIENT_SECRET=os.environ.get("SPOTIFY_CLIENT_SECRET", ""),
+        # Nombre del dispositivo de las alarmas si aún no se ha elegido ninguno
+        # en la página Spotify (p. ej. "Groove", el nombre de Raspotify).
+        SPOTIFY_DEVICE_NAME=os.environ.get("SPOTIFY_DEVICE_NAME", ""),
         SPOTIFY_REDIRECT_URI=os.environ.get(
             "SPOTIFY_REDIRECT_URI", "http://127.0.0.1:5000/spotify/callback"
         ),
@@ -152,7 +155,9 @@ def create_app(config=None, player=None, spotify=None):
     app.extensions["audio_player"] = player or create_player(app.config)
     app.extensions["spotify"] = spotify or create_spotify_client(app.config)
     app.extensions["spotify_alarm"] = SpotifyAlarmPlayer(
-        app.extensions["spotify"], app.config["DATABASE"]
+        app.extensions["spotify"], app.config["DATABASE"],
+        preferred_name=app.config["SPOTIFY_DEVICE_NAME"],
+        retry_delays=app.config.get("SPOTIFY_RETRY_DELAYS", RETRY_DELAYS),
     )
     app.jinja_env.filters["describe_source"] = describe_source
     app.jinja_env.filters["describe_volume"] = describe_volume

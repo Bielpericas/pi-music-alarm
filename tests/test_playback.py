@@ -262,6 +262,7 @@ class SpotifyAlarmPlayerStopTest(unittest.TestCase):
         conn.close()
         self.client = mock.Mock(spec=SpotifyClient)
         self.client.is_configured = True
+        self.client.get_devices.return_value = [{"id": "dev", "name": "PC", "type": "Computer", "is_active": True}]
         self.player = SpotifyAlarmPlayer(self.client, self.database)
 
     def test_stop_pauses_device_where_it_played(self):
@@ -290,9 +291,11 @@ class PlaybackRoutesTest(unittest.TestCase):
         self.local = mock.Mock(spec=AudioPlayer)
         self.client_spotify = mock.Mock(spec=SpotifyClient)
         self.client_spotify.is_configured = True
+        self.client_spotify.get_devices.return_value = [{"id": "dev", "name": "PC", "type": "Computer", "is_active": True}]
         self.app = create_app(
             {"TESTING": True, "SECRET_KEY": "test", "DATABASE": self.db_path,
-             "ALARM_LOG": os.path.join(self.tmpdir.name, "alarms.log")},
+             "ALARM_LOG": os.path.join(self.tmpdir.name, "alarms.log"),
+             "SPOTIFY_RETRY_DELAYS": (0, 0, 0, 0)},  # reintentos sin esperas reales
             player=self.local, spotify=self.client_spotify,
         )
         self.manager = self.app.extensions["playback"]

@@ -40,11 +40,18 @@ MAX_RETRY_WAIT = 5       # esperar un 429 solo si Retry-After es corto
 # --- Errores ---------------------------------------------------------------
 
 class SpotifyError(Exception):
-    """Error genérico de Spotify. `status` es el código HTTP si lo hay."""
+    """Error genérico de Spotify.
 
-    def __init__(self, message, status=None):
+    `status` es el código HTTP si lo hay; `reason` y `api_message` son los
+    campos `error.reason` y `error.message` tal y como los envía Spotify
+    (p. ej. "UNKNOWN" / "Player command failed: Restriction violated").
+    """
+
+    def __init__(self, message, status=None, reason=None, api_message=None):
         super().__init__(message)
         self.status = status
+        self.reason = reason
+        self.api_message = api_message
 
 
 class SpotifyNotConfiguredError(SpotifyError):
@@ -386,12 +393,15 @@ def _api_error(status, content):
     if reason:
         detail += f" ({reason})"
     if status == 401:
-        return SpotifyAuthError(f"Spotify rechazó el token: {detail}", status)
-    if status == 403:
-        return SpotifyForbiddenError(f"Spotify no permite la acción: {detail}", status)
-    if status == 404:
-        return SpotifyNotFoundError(f"Spotify no encuentra el dispositivo: {detail}", status)
-    return SpotifyError(f"Error de Spotify: {detail}", status)
+        exc = SpotifyAuthError(f"Spotify rechazó el token: {detail}", status)
+    elif status == 403:
+        exc = SpotifyForbiddenError(f"Spotify no permite la acción: {detail}", status)
+    elif status == 404:
+        exc = SpotifyNotFoundError(f"Spotify no encuentra el dispositivo: {detail}", status)
+    else:
+        exc = SpotifyError(f"Error de Spotify: {detail}", status)
+    exc.reason, exc.api_message = reason, message
+    return exc
 
 
 def create_spotify_client(config):

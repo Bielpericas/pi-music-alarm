@@ -371,6 +371,51 @@ Si algo falla (Spotify sin configurar o sin vincular, ningún dispositivo selecc
 Código: `spotify_player.py` (`SpotifyAlarmPlayer`) hace ese flujo usando `spotify_client.py`.
 `scheduler.fire_alarm()` solo elige entre el WAV y `SpotifyAlarmPlayer`, y aplica el respaldo; no hace HTTP.
 
+## Dispositivo de las alarmas Spotify (Groove)
+
+Al pulsar **Seleccionar** en la página Spotify se guardan el **ID y el nombre** del dispositivo (p. ej.
+«Groove», el de Raspotify). El ID de un dispositivo Spotify Connect puede cambiar (por ejemplo al
+reiniciar Raspotify), así que cada vez que una alarma Spotify empieza a sonar, también tras un snooze:
+
+1. Se pide la lista actual de dispositivos.
+2. Si el **ID guardado** está en la lista, se usa.
+3. Si no, se busca el dispositivo cuyo **nombre** coincide (sin distinguir mayúsculas). Si aparece, se
+   usa y se **guarda su ID nuevo**.
+4. Si no aparece, se **reintenta**: inmediato, +2 s, +4 s y +6 s (12 s como máximo). Sirve para
+   Raspotify recién reiniciado o aún no anunciado y para fallos de red puntuales. Un 404 al transferir
+   también se reintenta.
+5. Si tras los intentos no aparece, se registra el motivo y suena el **WAV local**.
+
+Después: transferir la reproducción a ese dispositivo → volumen inicial → reproducir → fade-in. Nunca se
+usa "el dispositivo que estaba sonando": si por la noche Spotify sonaba en una tablet, la alarma se
+lleva la música a Groove.
+
+- **Errores sin reintentos**: autenticación inválida, permisos (403, p. ej. sin Premium),
+  configuración o un 429 con espera larga. Van directamente al WAV.
+- **Dos dispositivos con el mismo nombre**: si uno es el del ID guardado, se usa ese. Si no, no se
+  elige al azar: se registra el conflicto y suena el WAV.
+- Mientras se busca el dispositivo, la página ya muestra la alarma ("Conectando con Spotify…") y
+  **STOP** / **+10 MIN** cortan la búsqueda al momento, sin que suene el WAV.
+- Instalaciones antiguas: no hace falta hacer nada. Si solo había un ID guardado, el nombre se completa
+  solo la primera vez que se encuentra el dispositivo. Opcionalmente, `SPOTIFY_DEVICE_NAME=Groove` en
+  `.env` sirve de nombre si nunca se ha seleccionado ninguno.
+
+**Groove "en frío"** (tras reiniciar Raspotify o la Pi): Groove sale en la lista de dispositivos, pero
+la primera orden puede fallar con **403 "Player command failed: Restriction violated"** (reason
+`UNKNOWN`) hasta que se activa. Para eso:
+
+- Ese 403 concreto se considera **temporal** y se reintenta con el mismo backoff (2, 4 y 6 s). Cada
+  reintento repite el ciclo completo: resolver Groove (ID/nombre), transferir y reproducir.
+- Tras transferir, se consulta la lista otra vez y se espera **hasta ~2 s** (comprobaciones inmediata,
+  +1 s y +1 s) a que Groove figure **activo y no restringido** antes de reproducir. Si no llega a
+  estarlo, se intenta reproducir igualmente. Si ya estaba activo, no se espera.
+- Los demás 403 (Premium, usuario no registrado, otros motivos) siguen **sin** reintentarse.
+- STOP / +10 MIN cortan cualquier espera al momento y no suena el WAV. Si se agotan los intentos, suena
+  el WAV como siempre.
+
+Código: `spotify_player.py` (`choose_device`, `is_cold_start_restriction` y reintentos en
+`SpotifyAlarmPlayer`).
+
 ## Volumen y fade-in (alarmas Spotify)
 
 Cada alarma Spotify tiene **volumen inicial**, **volumen final** y **duración del fade-in**. Por defecto

@@ -133,6 +133,19 @@ def set_setting(key, value):
 
 # --- Consultas del scheduler (usan su propia conexión, fuera de peticiones HTTP) ---
 
+def write_setting(database, key, value):
+    conn = connect(database)
+    try:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def read_setting(database, key, default=None):
     conn = connect(database)
     try:
