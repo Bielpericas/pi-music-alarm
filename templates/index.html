@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="heading">
+  <h1>Alarmas</h1>
+  <a class="btn btn-primary" href="{{ url_for('new_alarm') }}">+ Nueva</a>
+</div>
+
+{% if alarms %}
+  <ul class="alarm-list">
+    {% for alarm in alarms %}
+      <li class="alarm {% if not alarm.enabled %}alarm-off{% endif %}">
+        <div class="alarm-info">
+          <span class="alarm-time">{{ alarm.time }}</span>
+          <span class="alarm-name">{{ alarm.name }}</span>
+          <span class="alarm-days">{{ alarm.days | format_days }}</span>
+          {% if alarm.last_triggered %}
+            <span class="alarm-last">Última vez: {{ alarm.last_triggered }}</span>
+          {% endif %}
+        </div>
+        <div class="alarm-actions">
+          <form method="post" action="{{ url_for('test_alarm', alarm_id=alarm.id) }}">
+            <button class="btn" type="submit">Probar</button>
+          </form>
+          <form method="post" action="{{ url_for('toggle_alarm', alarm_id=alarm.id) }}">
+            <button class="btn {% if alarm.enabled %}btn-on{% endif %}" type="submit"
+                    title="{{ 'Pulsa para desactivar' if alarm.enabled else 'Pulsa para activar' }}">
+              {{ 'Activada' if alarm.enabled else 'Desactivada' }}
+            </button>
+          </form>
+          <form method="post" action="{{ url_for('delete_alarm', alarm_id=alarm.id) }}"
+                data-confirm="¿Borrar la alarma «{{ alarm.name }}»?">
+            <button class="btn btn-danger" type="submit">Borrar</button>
+          </form>
+        </div>
+      </li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p class="empty">No hay alarmas todavía.</p>
+{% endif %}
+{% endblock %}

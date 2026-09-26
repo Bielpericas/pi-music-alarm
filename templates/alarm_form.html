@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Nueva alarma · Despertador{% endblock %}
+{% block content %}
+<h1>Nueva alarma</h1>
+
+{% if errors %}
+  <ul class="errors">
+    {% for error in errors %}<li>{{ error }}</li>{% endfor %}
+  </ul>
+{% endif %}
+
+<form method="post" class="alarm-form">
+  <label for="name">Nombre</label>
+  <input id="name" name="name" type="text" maxlength="50" required
+         value="{{ data.name }}" placeholder="Trabajo">
+
+  <label for="time">Hora</label>
+  <input id="time" name="time" type="time" required value="{{ data.time }}">
+
+  <fieldset>
+    <legend>Repetir (ninguno = una vez)</legend>
+    <div class="days">
+      {% for day in day_names %}
+        <label class="day">
+          <input type="checkbox" name="days" value="{{ loop.index0 }}"
+                 {% if loop.index0 in data.days %}checked{% endif %}>
+          <span>{{ day }}</span>
+        </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <div class="form-actions">
+    <a class="btn" href="{{ url_for('index') }}">Cancelar</a>
+    <button class="btn btn-primary" type="submit">Guardar</button>
+  </div>
+</form>
+{% endblock %}
