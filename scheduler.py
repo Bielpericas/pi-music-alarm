@@ -44,10 +44,19 @@ def setup_logging(log_path):
         logger.addHandler(handler)
 
 
-def fire_alarm(name, manual=False):
-    """Acción de la alarma. De momento solo lo deja en consola y en el log."""
+def fire_alarm(name, manual=False, player=None):
+    """Acción de la alarma: la registra y pide al reproductor que suene.
+
+    El scheduler no sabe nada de audio: solo llama a `player.play()`, que no
+    bloquea. Cualquier fallo se registra y no interrumpe el scheduler.
+    """
     suffix = " (prueba manual)" if manual else ""
     logger.info("ALARMA ACTIVADA: %s%s", name, suffix)
+    if player is not None:
+        try:
+            player.play()
+        except Exception:
+            logger.exception("El reproductor falló al disparar «%s»", name)
 
 
 def alarm_matches_day(alarm, now):
@@ -55,7 +64,7 @@ def alarm_matches_day(alarm, now):
     return not days or str(now.weekday()) in days.split(",")
 
 
-def check_alarms(database, now=None):
+def check_alarms(database, now=None, player=None):
     """Dispara las alarmas que tocan en el minuto `now`. Devuelve sus nombres."""
     now = (now or datetime.now()).replace(second=0, microsecond=0)
     minute_key = now.strftime("%Y-%m-%d %H:%M")
@@ -66,19 +75,20 @@ def check_alarms(database, now=None):
             if alarm_matches_day(alarm, now) and db.claim_trigger(
                 conn, alarm["id"], minute_key
             ):
-                fire_alarm(alarm["name"])
+                fire_alarm(alarm["name"], player=player)
                 fired.append(alarm["name"])
     finally:
         conn.close()
     return fired
 
 
-def start_scheduler(app):
+def start_scheduler(app, player=None):
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
         check_alarms,
         CronTrigger(second=0),
         args=[app.config["DATABASE"]],
+        kwargs={"player": player},
         id="check_alarms",
         max_instances=1,
         coalesce=True,

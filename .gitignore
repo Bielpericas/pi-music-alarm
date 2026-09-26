@@ -4,3 +4,7 @@ __pycache__/
 *.db
 .env
 instance/
+
+# Sonidos locales: no subir binarios al repo
+sounds/*
+!sounds/.gitkeep

@@ -4,11 +4,13 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import scheduler  # noqa: E402
 from app import create_app  # noqa: E402
+from audio_player import AudioPlayer  # noqa: E402
 
 # 2026-09-28 es lunes (weekday 0).
 MONDAY_0730 = datetime(2026, 9, 28, 7, 30, 5)
@@ -19,12 +21,15 @@ class AlarmAppTest(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tmpdir.name, "test.db")
         self.log_path = os.path.join(self.tmpdir.name, "alarms.log")
+        # Mock del reproductor: los tests nunca reproducen audio de verdad.
+        self.player = mock.Mock(spec=AudioPlayer)
         self.app = self.make_app()
         self.client = self.app.test_client()
 
     def make_app(self):
         return create_app(
-            {"TESTING": True, "DATABASE": self.db_path, "ALARM_LOG": self.log_path}
+            {"TESTING": True, "DATABASE": self.db_path, "ALARM_LOG": self.log_path},
+            player=self.player,
         )
 
     def tearDown(self):
@@ -177,6 +182,42 @@ class AlarmAppTest(unittest.TestCase):
         self.make_app()
         self.assertIsNone(self.rows()[0]["last_triggered"])
         self.assertEqual(self.check(MONDAY_0730), ["Vieja"])
+
+    # --- Audio (con mock) ---
+
+    def test_scheduled_alarm_plays_sound(self):
+        self.create()
+        scheduler.check_alarms(self.db_path, MONDAY_0730, player=self.player)
+        self.player.play.assert_called_once_with()
+
+    def test_no_sound_when_alarm_does_not_fire(self):
+        self.create()
+        scheduler.check_alarms(self.db_path, MONDAY_0730.replace(minute=31), player=self.player)
+        self.player.play.assert_not_called()
+
+    def test_manual_test_plays_sound(self):
+        self.create()
+        self.client.post(f"/alarms/{self.rows()[0]['id']}/test")
+        self.player.play.assert_called_once_with()
+
+    def test_player_crash_does_not_break_scheduler_or_flask(self):
+        self.player.play.side_effect = RuntimeError("altavoz roto")
+        self.create(days=["0"])
+        self.create(name="Segunda", days=["0"])
+        with self.assertLogs("alarms", "ERROR"):
+            fired = scheduler.check_alarms(self.db_path, MONDAY_0730, player=self.player)
+        self.assertEqual(sorted(fired), ["Segunda", "Trabajo"])
+        with self.assertLogs("alarms", "ERROR"):
+            resp = self.client.post(f"/alarms/{self.rows()[0]['id']}/test")
+        self.assertEqual(resp.status_code, 302)
+
+    def test_default_player_uses_configured_sound_path(self):
+        scheduler.close_logging()
+        sound = os.path.join(self.tmpdir.name, "mi_sonido.wav")
+        app = create_app({"TESTING": True, "DATABASE": self.db_path,
+                          "ALARM_LOG": self.log_path, "SOUND_PATH": sound})
+        player = app.extensions["audio_player"]
+        self.assertEqual(str(player.sound_path), sound)
 
     def test_scheduler_not_started_in_tests(self):
         # Si arrancara, habría un hilo de APScheduler vivo.

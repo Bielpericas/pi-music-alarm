@@ -1,4 +1,4 @@
-"""App Flask del despertador: CRUD de alarmas + scheduler (sin audio todavía)."""
+"""App Flask del despertador: CRUD de alarmas + scheduler + audio local."""
 import os
 import re
 from pathlib import Path
@@ -8,7 +8,9 @@ from werkzeug.serving import is_running_from_reloader
 
 import db
 import scheduler
+from audio_player import create_player
 
+DEFAULT_SOUND = Path(__file__).parent / "sounds" / "alarm.wav"
 DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MAX_NAME_LEN = 50
@@ -53,13 +55,16 @@ def format_days(days_csv):
     return ", ".join(DAY_NAMES[d] for d in days)
 
 
-def create_app(config=None):
+def create_app(config=None, player=None):
+    """Crea la app. `player` permite inyectar otro reproductor (p. ej. un mock en tests)."""
     app = Flask(__name__, instance_relative_config=True)
     app.config.update(
         SECRET_KEY=os.environ.get("SECRET_KEY", "dev"),
         DATABASE=str(Path(app.instance_path) / "alarms.db"),
         ALARM_LOG=str(Path(app.instance_path) / "alarms.log"),
         SCHEDULER_ENABLED=True,
+        AUDIO_BACKEND=os.environ.get("AUDIO_BACKEND", "local"),
+        SOUND_PATH=os.environ.get("ALARM_SOUND", str(DEFAULT_SOUND)),
     )
     if config:
         app.config.update(config)
@@ -67,6 +72,7 @@ def create_app(config=None):
     db.init_app(app)
     scheduler.setup_logging(app.config["ALARM_LOG"])
     app.jinja_env.filters["format_days"] = format_days
+    app.extensions["audio_player"] = player or create_player(app.config)
 
     # En modo debug Flask arranca dos procesos (vigilante + servidor); el
     # scheduler solo debe correr en el que sirve. Sin debug hay un solo proceso.
@@ -75,7 +81,7 @@ def create_app(config=None):
         and not app.testing
         and (not app.debug or is_running_from_reloader())
     ):
-        scheduler.start_scheduler(app)
+        scheduler.start_scheduler(app, app.extensions["audio_player"])
 
     @app.get("/")
     def index():
@@ -117,7 +123,9 @@ def create_app(config=None):
         alarm = db.get_alarm(alarm_id)
         if alarm is None:
             abort(404)
-        scheduler.fire_alarm(alarm["name"], manual=True)
+        scheduler.fire_alarm(
+            alarm["name"], manual=True, player=app.extensions["audio_player"]
+        )
         flash(f"Alarma «{alarm['name']}» probada: mira la consola o instance/alarms.log.")
         return redirect(url_for("index"))
 
