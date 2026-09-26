@@ -371,6 +371,35 @@ Si algo falla (Spotify sin configurar o sin vincular, ningún dispositivo selecc
 Código: `spotify_player.py` (`SpotifyAlarmPlayer`) hace ese flujo usando `spotify_client.py`.
 `scheduler.fire_alarm()` solo elige entre el WAV y `SpotifyAlarmPlayer`, y aplica el respaldo; no hace HTTP.
 
+## Alarma sonando: STOP y +10 MIN
+
+Cuando una alarma suena (a su hora o con **Probar**), la página principal muestra arriba un recuadro con
+la hora, el nombre, cómo suena (Spotify, sonido local o sonido local como respaldo) y dos botones grandes:
+
+- **STOP**: para el sonido (pausa Spotify o para el WAV) y da la alarma por terminada. No cambia la
+  programación: una alarma recurrente seguirá sonando los próximos días y una puntual sigue desactivada.
+  Pulsarlo varias veces no pasa nada.
+- **+10 MIN**: para el sonido y vuelve a disparar **la misma alarma** (misma fuente y mismo contenido de
+  Spotify) dentro de 10 minutos, sin cambiar su hora ni crear una alarma nueva en la lista. Se puede
+  posponer las veces que quieras. Mientras tanto aparece "vuelve a sonar a las HH:MM" con un botón
+  **Cancelar**.
+
+La página consulta el estado cada 10 s (`/playback/state`) y se recarga sola cuando empieza a sonar una
+alarma, así que puedes dejarla abierta en el móvil.
+
+Reglas:
+
+- **Solo suena una alarma a la vez**: si se dispara otra mientras suena una, la anterior se para y suena
+  la nueva.
+- Si una alarma vuelve a sonar (o la borras) mientras estaba pospuesta, ese snooze se cancela.
+- **Los snoozes solo viven en memoria**: si la app o la Raspberry se reinician durante un snooze, se
+  pierde (mejor eso que sonar a una hora incorrecta). Las alarmas normales siguen guardadas en SQLite.
+- El WAV local suena una vez (no se repite en bucle); el recuadro sigue visible hasta STOP o +10 MIN.
+
+Código: `playback.py` (`AlarmPlaybackManager`) guarda el estado y hace start / stop / snooze con un lock
+(los hilos de waitress y de APScheduler no se pisan). El scheduler solo llama a `manager.start(alarm)`;
+las vistas solo llaman a `stop()` / `snooze()`. El snooze es un job de APScheduler en memoria.
+
 ## Estructura
 
 ```
@@ -381,6 +410,7 @@ audio_player.py     # AudioPlayer / LocalAudioPlayer (winsound o aplay)
 spotify_client.py   # todo el HTTP con Spotify: OAuth, refresh, errores
 spotify_views.py    # rutas /spotify/...
 spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> reproducir
+playback.py         # alarma sonando: estado, STOP y snooze
 serve.py            # arranque de producción (waitress, red local)
 deploy/             # plantilla systemd + install-service.sh
 .env.example        # plantilla de configuración (copiar a .env)

@@ -4,6 +4,7 @@
 dispositivo seleccionado -> transferir -> reproducir el contenido. Nunca lanza
 excepciones: devuelve True si Spotify aceptó la orden y False si algo falló
 (el motivo queda en el log), para que quien lo llame use el WAV de respaldo.
+`stop()` pausa el dispositivo donde empezó a sonar.
 """
 import logging
 
@@ -20,6 +21,7 @@ class SpotifyAlarmPlayer:
     def __init__(self, client, database):
         self.client = client
         self.database = database
+        self._device_id = None  # dispositivo donde empezó a sonar la última alarma
 
     def play(self, uri):
         try:
@@ -33,5 +35,19 @@ class SpotifyAlarmPlayer:
         except Exception as exc:  # SpotifyError, ValueError o cualquier imprevisto
             logger.warning("Spotify falló (%s): %s", uri, exc)
             return False
+        self._device_id = device_id
         logger.info("Spotify reproduciendo %s", uri)
+        return True
+
+    def stop(self):
+        """Pausa el dispositivo donde sonó la alarma. Nunca lanza excepciones."""
+        device_id = self._device_id
+        if not device_id:
+            return False
+        try:
+            self.client.pause(device_id)
+        except Exception as exc:
+            logger.warning("No se pudo pausar Spotify: %s", exc)
+            return False
+        logger.info("Spotify pausado")
         return True

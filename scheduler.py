@@ -13,8 +13,10 @@ from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 import db
+from playback import play_alarm_sound
 
 logger = logging.getLogger("alarms")
 
@@ -45,38 +47,15 @@ def setup_logging(log_path):
 
 
 def fire_alarm(alarm, manual=False, player=None, spotify=None):
-    """Acción de la alarma: la registra y hace que suene.
+    """Registra la alarma y la hace sonar, sin estado de "alarma activa".
 
-    - Fuente "local": `player.play()` (el WAV), igual que siempre.
-    - Fuente "spotify": `spotify.play(uri)`; si devuelve False o no hay
-      Spotify disponible, suena el WAV local como respaldo.
-
-    El scheduler no sabe nada de audio ni de HTTP: solo habla con esos dos
-    objetos. Cualquier fallo se registra y no interrumpe el scheduler.
+    Se mantiene por compatibilidad; la app usa AlarmPlaybackManager.start(),
+    que además recuerda qué suena para STOP / +10 MIN.
     Devuelve lo que ha sonado: "local", "spotify" o "fallback".
     """
-    name = alarm["name"]
     suffix = " (prueba manual)" if manual else ""
-    logger.info("ALARMA ACTIVADA: %s%s", name, suffix)
-
-    if alarm["source"] == "spotify":
-        if spotify is not None and alarm["spotify_uri"]:
-            try:
-                if spotify.play(alarm["spotify_uri"]):
-                    return "spotify"
-            except Exception:
-                logger.exception("Spotify falló al disparar «%s»", name)
-        logger.warning("Usando el sonido local como respaldo para «%s»", name)
-        outcome = "fallback"
-    else:
-        outcome = "local"
-
-    if player is not None:
-        try:
-            player.play()
-        except Exception:
-            logger.exception("El reproductor falló al disparar «%s»", name)
-    return outcome
+    logger.info("ALARMA ACTIVADA: %s%s", alarm["name"], suffix)
+    return play_alarm_sound(alarm, player, spotify)
 
 
 def alarm_matches_day(alarm, now):
@@ -84,8 +63,11 @@ def alarm_matches_day(alarm, now):
     return not days or str(now.weekday()) in days.split(",")
 
 
-def check_alarms(database, now=None, player=None, spotify=None):
+def check_alarms(database, now=None, player=None, spotify=None, manager=None):
     """Dispara las alarmas que tocan en el minuto `now`. Devuelve sus nombres.
+
+    Con `manager` (AlarmPlaybackManager) la alarma queda como "activa" para
+    STOP / +10 MIN; sin él, solo suena (así la usan algunos tests).
 
     APScheduler ejecuta este job en su pool de hilos: si Spotify tarda (las
     peticiones tienen timeout), no se bloquea el bucle del scheduler.
@@ -99,20 +81,23 @@ def check_alarms(database, now=None, player=None, spotify=None):
             if alarm_matches_day(alarm, now) and db.claim_trigger(
                 conn, alarm["id"], minute_key
             ):
-                fire_alarm(alarm, player=player, spotify=spotify)
+                if manager is not None:
+                    manager.start(alarm)
+                else:
+                    fire_alarm(alarm, player=player, spotify=spotify)
                 fired.append(alarm["name"])
     finally:
         conn.close()
     return fired
 
 
-def start_scheduler(app, player=None, spotify=None):
+def start_scheduler(app, manager):
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
         check_alarms,
         CronTrigger(second=0),
         args=[app.config["DATABASE"]],
-        kwargs={"player": player, "spotify": spotify},
+        kwargs={"manager": manager},
         id="check_alarms",
         max_instances=1,
         coalesce=True,
@@ -122,3 +107,18 @@ def start_scheduler(app, player=None, spotify=None):
     atexit.register(lambda: scheduler.shutdown(wait=False))
     logger.info("Scheduler iniciado: revisando alarmas cada minuto.")
     return scheduler
+
+
+def date_job_scheduler(scheduler):
+    """Devuelve schedule_once(run_at, callback) -> cancel() usando APScheduler.
+
+    Para los snoozes. El jobstore por defecto es en memoria: si la app se
+    reinicia, los snoozes pendientes se pierden (a propósito).
+    """
+    def schedule_once(run_at, callback):
+        job = scheduler.add_job(
+            callback, DateTrigger(run_date=run_at), misfire_grace_time=60
+        )
+        return job.remove
+
+    return schedule_once

@@ -3,13 +3,14 @@ import os
 import re
 from pathlib import Path
 
-from flask import Flask, abort, flash, redirect, render_template, request, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
 from werkzeug.serving import is_running_from_reloader
 
 import db
 import scheduler
 import spotify_views
 from audio_player import create_player
+from playback import AlarmPlaybackManager
 from spotify_client import create_spotify_client, parse_spotify_uri
 from spotify_player import SpotifyAlarmPlayer
 
@@ -68,6 +69,13 @@ def describe_source(alarm):
     return "Local"
 
 
+def playback_key(active, snoozes):
+    """Huella del estado de reproducción: si cambia, la página se recarga."""
+    parts = [f"{active.id}@{active.started_at.isoformat()}" if active else "-"]
+    parts += [f"{p.alarm['id']}@{p.run_at.isoformat()}" for p in snoozes]
+    return "|".join(parts)
+
+
 def format_days(days_csv):
     if not days_csv:
         return "Una vez"
@@ -111,6 +119,11 @@ def create_app(config=None, player=None, spotify=None):
     )
     app.jinja_env.filters["describe_source"] = describe_source
     app.register_blueprint(spotify_views.bp)
+    # Estado de la alarma que suena (STOP / +10 MIN). Ver playback.py.
+    playback = AlarmPlaybackManager(
+        app.extensions["audio_player"], app.extensions["spotify_alarm"]
+    )
+    app.extensions["playback"] = playback
 
     # En modo debug Flask arranca dos procesos (vigilante + servidor); el
     # scheduler solo debe correr en el que sirve. Sin debug hay un solo proceso.
@@ -119,9 +132,9 @@ def create_app(config=None, player=None, spotify=None):
         and not app.testing
         and (not app.debug or is_running_from_reloader())
     ):
-        scheduler.start_scheduler(
-            app, app.extensions["audio_player"], app.extensions["spotify_alarm"]
-        )
+        background = scheduler.start_scheduler(app, playback)
+        # Los snoozes usan el mismo APScheduler (jobs en memoria).
+        playback.schedule_once = scheduler.date_job_scheduler(background)
 
     def render_form(data, errors=(), status=200, alarm_id=None):
         return render_template(
@@ -131,7 +144,11 @@ def create_app(config=None, player=None, spotify=None):
 
     @app.get("/")
     def index():
-        return render_template("index.html", alarms=db.list_alarms())
+        active, snoozes = playback.active, playback.pending_snoozes
+        return render_template(
+            "index.html", alarms=db.list_alarms(), active=active, snoozes=snoozes,
+            playback_key=playback_key(active, snoozes),
+        )
 
     @app.route("/alarms/new", methods=["GET", "POST"])
     def new_alarm():
@@ -178,6 +195,7 @@ def create_app(config=None, player=None, spotify=None):
     def delete_alarm(alarm_id):
         if not db.delete_alarm(alarm_id):
             abort(404)
+        playback.forget(alarm_id)  # si sonaba o estaba pospuesta, se cancela
         flash("Alarma eliminada.")
         return redirect(url_for("index"))
 
@@ -187,11 +205,7 @@ def create_app(config=None, player=None, spotify=None):
         if alarm is None:
             abort(404)
         # Exactamente el mismo flujo que usa el scheduler.
-        outcome = scheduler.fire_alarm(
-            alarm, manual=True,
-            player=app.extensions["audio_player"],
-            spotify=app.extensions["spotify_alarm"],
-        )
+        outcome = playback.start(alarm, manual=True)
         messages = {
             "local": "sonando el WAV local",
             "spotify": "reproduciendo en Spotify",
@@ -200,6 +214,53 @@ def create_app(config=None, player=None, spotify=None):
         flash(f"Alarma «{alarm['name']}» probada: {messages[outcome]}.",
               "error" if outcome == "fallback" else "message")
         return redirect(url_for("index"))
+
+    # --- Alarma sonando: STOP y +10 MIN (la lógica vive en playback.py) ---
+
+    @app.post("/playback/stop")
+    def stop_alarm():
+        result = playback.stop()
+        if result is None:
+            flash("No hay ninguna alarma sonando.")
+        elif not result.silenced:
+            flash(f"Alarma «{result.active.alarm['name']}» detenida, pero no se pudo "
+                  "parar el sonido (mira instance/alarms.log).", "error")
+        else:
+            flash(f"Alarma «{result.active.alarm['name']}» detenida.")
+        return redirect(url_for("index"))
+
+    @app.post("/playback/snooze")
+    def snooze_alarm():
+        pending = playback.snooze()
+        if pending is None:
+            flash("No hay ninguna alarma sonando.")
+        else:
+            flash(f"Alarma «{pending.alarm['name']}» pospuesta hasta las "
+                  f"{pending.run_at.strftime('%H:%M')}.")
+        return redirect(url_for("index"))
+
+    @app.post("/playback/snooze/<int:alarm_id>/cancel")
+    def cancel_snooze(alarm_id):
+        if playback.cancel_snooze(alarm_id):
+            flash("Snooze cancelado: la alarma no volverá a sonar hasta su próxima hora.")
+        return redirect(url_for("index"))
+
+    @app.get("/playback/state")
+    def playback_state():
+        """Estado para que la página se refresque sola cuando empieza a sonar."""
+        active, snoozes = playback.active, playback.pending_snoozes
+        return jsonify(
+            key=playback_key(active, snoozes),
+            active=None if active is None else {
+                "id": active.id,
+                "name": active.alarm["name"],
+                "started_at": active.started_at.isoformat(timespec="seconds"),
+                "via": active.via,
+            },
+            snoozes=[{"id": p.alarm["id"], "name": p.alarm["name"],
+                      "run_at": p.run_at.isoformat(timespec="seconds")}
+                     for p in snoozes],
+        )
 
     return app
 

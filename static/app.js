@@ -23,3 +23,22 @@ document.addEventListener("submit", function (event) {
   }
   update();
 })();
+
+// Página principal: si empieza a sonar una alarma (o cambia un snooze), se
+// recarga para mostrar/ocultar STOP y +10 MIN. Consulta ligera cada 10 s.
+(function () {
+  var marker = document.querySelector("[data-playback-key]");
+  if (!marker || !window.fetch) return;
+  var key = marker.getAttribute("data-playback-key");
+  var url = marker.getAttribute("data-playback-url");
+
+  setInterval(function () {
+    if (document.hidden) return;
+    fetch(url, { cache: "no-store" })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (state) {
+        if (state && state.key !== key) window.location.reload();
+      })
+      .catch(function () {});
+  }, 10000);
+})();

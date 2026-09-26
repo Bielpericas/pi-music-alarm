@@ -1,0 +1,240 @@
+"""Alarma que está sonando ahora: start, stop y snooze.
+
+`AlarmPlaybackManager` es el único que sabe qué alarma suena, desde cuándo y
+por dónde (Spotify, WAV local o WAV como respaldo de Spotify). El scheduler,
+el botón Probar y los botones STOP / +10 MIN solo hablan con él.
+
+Concurrencia (hilos de APScheduler + hilos de waitress):
+- start/stop/snooze/forget se serializan con un único lock. Si Spotify tarda
+  en arrancar, un STOP pulsado a la vez espera a que termine y luego la para.
+- El estado se publica como objetos inmutables (`active`, `pending_snoozes`):
+  las páginas lo leen sin coger el lock, así que nunca se quedan esperando.
+
+Reglas:
+- Si se dispara una alarma mientras suena otra, la anterior se para y suena
+  la nueva ("la última gana").
+- STOP es idempotente: sin alarma sonando no hace nada.
+- Los snoozes viven solo en memoria: si la app se reinicia, se pierden (mejor
+  eso que sonar a una hora incorrecta). Las alarmas normales no se tocan.
+"""
+import logging
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import NamedTuple, Optional
+
+logger = logging.getLogger("alarms")
+
+SNOOZE_MINUTES = 10
+ALARM_FIELDS = ("id", "name", "time", "source", "spotify_uri")
+
+
+def play_alarm_sound(alarm, player=None, spotify=None):
+    """Hace sonar la alarma y devuelve "local", "spotify" o "fallback".
+
+    - Fuente "local": `player.play()` (el WAV).
+    - Fuente "spotify": `spotify.play(uri)`; si falla o no hay Spotify, el WAV.
+    Nunca lanza excepciones: los fallos se registran.
+    """
+    name = alarm["name"]
+    if alarm["source"] == "spotify":
+        if spotify is not None and alarm["spotify_uri"]:
+            try:
+                if spotify.play(alarm["spotify_uri"]):
+                    return "spotify"
+            except Exception:
+                logger.exception("Spotify falló al disparar «%s»", name)
+        logger.warning("Usando el sonido local como respaldo para «%s»", name)
+        outcome = "fallback"
+    else:
+        outcome = "local"
+
+    if player is not None:
+        try:
+            player.play()
+        except Exception:
+            logger.exception("El reproductor falló al disparar «%s»", name)
+    return outcome
+
+
+def timer_schedule_once(run_at, callback):
+    """Programa `callback` para `run_at` con un hilo Timer. Devuelve cancel().
+
+    Solo se usa si no hay APScheduler (p. ej. con el scheduler desactivado).
+    """
+    delay = max(0.0, (run_at - datetime.now()).total_seconds())
+    timer = threading.Timer(delay, callback)
+    timer.daemon = True
+    timer.start()
+    return timer.cancel
+
+
+@dataclass(frozen=True)
+class ActiveAlarm:
+    alarm: dict           # copia de la alarma (id, name, time, source, spotify_uri)
+    started_at: datetime
+    via: str              # "local", "spotify" o "fallback"
+    manual: bool = False  # disparada con Probar
+    snoozes: int = 0      # cuántas veces se ha pospuesto ya
+
+    @property
+    def id(self):
+        return self.alarm["id"]
+
+
+@dataclass(frozen=True)
+class PendingSnooze:
+    alarm: dict
+    run_at: datetime
+    snoozes: int
+
+
+class StopResult(NamedTuple):
+    active: ActiveAlarm   # la alarma que se ha parado
+    silenced: bool        # False si no se pudo parar el sonido (p. ej. Spotify sin red)
+
+
+class AlarmPlaybackManager:
+    def __init__(self, player, spotify=None, schedule_once=None,
+                 clock=datetime.now, snooze_minutes=SNOOZE_MINUTES):
+        self.player = player                  # AudioPlayer local (WAV)
+        self.spotify = spotify                # SpotifyAlarmPlayer o None
+        self.schedule_once = schedule_once or timer_schedule_once
+        self.snooze_minutes = snooze_minutes
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._active: Optional[ActiveAlarm] = None
+        self._pending = {}                    # alarm_id -> (PendingSnooze, cancel)
+        self._pending_view = ()
+
+    # --- Estado (lectura sin lock: son referencias a objetos inmutables) ---
+
+    @property
+    def active(self):
+        return self._active
+
+    @property
+    def pending_snoozes(self):
+        return self._pending_view
+
+    # --- Acciones ---
+
+    def start(self, alarm, manual=False, snoozes=0):
+        """Hace sonar `alarm`, sustituyendo a la que sonara. Devuelve cómo suena."""
+        alarm = {key: alarm[key] for key in ALARM_FIELDS}
+        with self._lock:
+            suffix = " (prueba manual)" if manual else " (pospuesta)" if snoozes else ""
+            logger.info("ALARMA ACTIVADA: %s%s", alarm["name"], suffix)
+
+            # Si esta misma alarma tenía un snooze pendiente, queda obsoleto.
+            self._cancel_pending(alarm["id"])
+            previous = self._active
+            if previous is not None:
+                logger.info("«%s» sustituye a «%s», que estaba sonando",
+                            alarm["name"], previous.alarm["name"])
+                if previous.via != "spotify":
+                    self._stop_local()
+            via = play_alarm_sound(alarm, self.player, self.spotify)
+            # Si la anterior sonaba en Spotify y la nueva no la ha reemplazado
+            # allí, se pausa. (Pausar y luego reproducir en Spotify podría
+            # llegar desordenado, por eso no se pausa si la nueva es Spotify.)
+            if previous is not None and previous.via == "spotify" and via != "spotify":
+                self._stop_spotify()
+
+            self._active = ActiveAlarm(alarm, self._clock(), via, manual, snoozes)
+            return via
+
+    def stop(self):
+        """Para la alarma que suena. Devuelve StopResult, o None si no sonaba nada."""
+        with self._lock:
+            active = self._active
+            if active is None:
+                return None
+            self._active = None
+            silenced = self._stop_spotify() if active.via == "spotify" else self._stop_local()
+            logger.info("ALARMA DETENIDA: %s", active.alarm["name"])
+            return StopResult(active, silenced)
+
+    def snooze(self, minutes=None):
+        """Para la alarma y la vuelve a disparar dentro de N minutos.
+
+        Devuelve el PendingSnooze creado, o None si no sonaba nada.
+        """
+        with self._lock:
+            result = self.stop()
+            if result is None:
+                return None
+            active = result.active
+            run_at = self._clock() + timedelta(minutes=minutes or self.snooze_minutes)
+            pending = self._schedule(active.alarm, run_at, active.snoozes + 1)
+            logger.info("ALARMA POSPUESTA: %s hasta las %s",
+                        active.alarm["name"], run_at.strftime("%H:%M"))
+            return pending
+
+    def cancel_snooze(self, alarm_id):
+        """Cancela el snooze pendiente de una alarma. Devuelve True si había uno."""
+        with self._lock:
+            had_snooze = alarm_id in self._pending
+            self._cancel_pending(alarm_id)
+            if had_snooze:
+                logger.info("Snooze cancelado para la alarma %s", alarm_id)
+            return had_snooze
+
+    def forget(self, alarm_id):
+        """La alarma se ha borrado: cancela su snooze y la para si está sonando."""
+        with self._lock:
+            self._cancel_pending(alarm_id)
+            if self._active is not None and self._active.id == alarm_id:
+                self.stop()
+
+    # --- Internos ---
+
+    def _schedule(self, alarm, run_at, snoozes):
+        self._cancel_pending(alarm["id"])
+        pending = PendingSnooze(alarm, run_at, snoozes)
+        cancel = self.schedule_once(run_at, lambda: self._fire_snooze(pending))
+        self._pending[alarm["id"]] = (pending, cancel)
+        self._publish_pending()
+        return pending
+
+    def _fire_snooze(self, pending):
+        with self._lock:
+            entry = self._pending.get(pending.alarm["id"])
+            if entry is None or entry[0] is not pending:
+                return  # cancelado o sustituido por otro snooze mientras tanto
+            del self._pending[pending.alarm["id"]]
+            self._publish_pending()
+            self.start(pending.alarm, snoozes=pending.snoozes)
+
+    def _cancel_pending(self, alarm_id):
+        entry = self._pending.pop(alarm_id, None)
+        if entry is not None:
+            try:
+                entry[1]()
+            except Exception:
+                pass  # el job ya se había ejecutado o no existe
+            self._publish_pending()
+
+    def _publish_pending(self):
+        self._pending_view = tuple(
+            sorted((p for p, _ in self._pending.values()), key=lambda p: p.run_at)
+        )
+
+    def _stop_local(self):
+        if self.player is None:
+            return True
+        try:
+            self.player.stop()
+            return True
+        except Exception:
+            logger.exception("No se pudo parar el sonido local")
+            return False
+
+    def _stop_spotify(self):
+        if self.spotify is None:
+            return False
+        try:
+            return bool(self.spotify.stop())
+        except Exception:
+            logger.exception("No se pudo pausar Spotify")
+            return False

@@ -1,5 +1,38 @@
 {% extends "base.html" %}
 {% block content %}
+<div data-playback-key="{{ playback_key }}" data-playback-url="{{ url_for('playback_state') }}" hidden></div>
+
+{% if active %}
+  <section class="ringing" aria-live="assertive">
+    <p class="ringing-label">ALARMA</p>
+    <p class="ringing-title">{{ active.alarm.time }} · {{ active.alarm.name }}</p>
+    <p class="ringing-detail">
+      {% if active.via == "spotify" %}{{ active.alarm | describe_source }}
+      {% elif active.via == "fallback" %}Sonido local (Spotify no disponible)
+      {% else %}Sonido local{% endif %}
+      {% if active.snoozes %} · pospuesta {{ active.snoozes }} {{ "vez" if active.snoozes == 1 else "veces" }}{% endif %}
+      {% if active.manual %} · prueba{% endif %}
+    </p>
+    <div class="ringing-actions">
+      <form method="post" action="{{ url_for('stop_alarm') }}">
+        <button class="btn btn-big btn-stop" type="submit">STOP</button>
+      </form>
+      <form method="post" action="{{ url_for('snooze_alarm') }}">
+        <button class="btn btn-big btn-snooze" type="submit">+10 MIN</button>
+      </form>
+    </div>
+  </section>
+{% endif %}
+
+{% for snooze in snoozes %}
+  <div class="flash snooze-info">
+    <span>⏰ «{{ snooze.alarm.name }}» pospuesta: vuelve a sonar a las {{ snooze.run_at.strftime("%H:%M") }}.</span>
+    <form method="post" action="{{ url_for('cancel_snooze', alarm_id=snooze.alarm.id) }}">
+      <button class="btn" type="submit">Cancelar</button>
+    </form>
+  </div>
+{% endfor %}
+
 <div class="heading">
   <h1>Alarmas</h1>
   <a class="btn btn-primary" href="{{ url_for('new_alarm') }}">+ Nueva</a>

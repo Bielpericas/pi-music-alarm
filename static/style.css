@@ -154,3 +154,43 @@ code { overflow-wrap: anywhere; }
 .spotify-field { display: flex; flex-direction: column; gap: 6px; }
 .spotify-field[hidden] { display: none; }
 .spotify-field p { margin: 0; }
+
+/* Alarma sonando: STOP / +10 MIN */
+.ringing {
+  background: var(--card);
+  border: 3px solid var(--danger);
+  border-radius: 16px;
+  padding: 18px 16px;
+  margin-bottom: 20px;
+  text-align: center;
+}
+.ringing p { margin: 0 0 6px; }
+.ringing-label { color: var(--danger); font-weight: 800; letter-spacing: 0.2em; }
+.ringing-title { font-size: 1.6rem; font-weight: 700; overflow-wrap: anywhere; }
+.ringing-detail { color: var(--muted); }
+.ringing-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 14px;
+}
+.ringing-actions form { margin: 0; }
+.btn-big {
+  width: 100%;
+  min-height: 72px;
+  font-size: 1.4rem;
+  font-weight: 800;
+  border-radius: 14px;
+}
+.btn-stop { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-snooze { background: var(--primary); border-color: var(--primary); color: #fff; }
+.snooze-info { border-left-color: var(--primary); }
+.snooze-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.snooze-info form { margin: 0; }
