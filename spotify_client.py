@@ -207,6 +207,16 @@ class SpotifyClient:
     def pause(self, device_id=None):
         self._api("PUT", "/me/player/pause", params=_device(device_id))
 
+    def set_volume(self, volume_percent, device_id=None):
+        """PUT /me/player/volume (0-100). Requiere Premium y un dispositivo que
+        admita control de volumen (en librespot, volume-ctrl distinto de fixed)."""
+        volume = int(volume_percent)
+        if not 0 <= volume <= 100:
+            raise ValueError(f"Volumen fuera de rango: {volume}")
+        params = {"volume_percent": volume}
+        params.update(_device(device_id) or {})
+        self._api("PUT", "/me/player/volume", params=params)
+
     # Internos
 
     def _require_config(self):

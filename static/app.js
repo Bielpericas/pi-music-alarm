@@ -42,3 +42,15 @@ document.addEventListener("submit", function (event) {
       .catch(function () {});
   }, 10000);
 })();
+
+// Formulario de alarma: muestra el valor de los deslizadores de volumen.
+(function () {
+  var outputs = document.querySelectorAll("[data-volume-output]");
+  for (var i = 0; i < outputs.length; i++) {
+    (function (output) {
+      var input = document.getElementById(output.getAttribute("for"));
+      if (!input) return;
+      input.addEventListener("input", function () { output.textContent = input.value; });
+    })(outputs[i]);
+  }
+})();

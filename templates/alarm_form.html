@@ -52,6 +52,29 @@
              placeholder="https://open.spotify.com/playlist/...">
       <p class="muted small">Se reproduce en el dispositivo elegido en la sección Spotify.
         Si Spotify falla, suena el WAV local.</p>
+
+      <div class="volume-controls">
+        <label for="volume_start">Volumen inicial:
+          <output for="volume_start" data-volume-output>{{ data.volume_start }}</output> %</label>
+        <input id="volume_start" name="volume_start" type="range" min="0" max="100" step="5"
+               value="{{ data.volume_start }}">
+
+        <label for="volume_end">Volumen final:
+          <output for="volume_end" data-volume-output>{{ data.volume_end }}</output> %</label>
+        <input id="volume_end" name="volume_end" type="range" min="0" max="100" step="5"
+               value="{{ data.volume_end }}">
+
+        <label for="fade_minutes">Subida progresiva (fade-in)</label>
+        <select id="fade_minutes" name="fade_minutes">
+          {% set choices = fade_choices if data.fade_minutes in fade_choices
+                           else (fade_choices + (data.fade_minutes,)) | sort %}
+          {% for minutes in choices %}
+            <option value="{{ minutes }}" {% if minutes == data.fade_minutes %}selected{% endif %}>
+              {{ "Sin fade (directo al volumen final)" if minutes == 0 else minutes ~ " min" }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
     </div>
   </fieldset>
 

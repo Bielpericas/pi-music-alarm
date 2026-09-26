@@ -23,7 +23,11 @@ class SpotifyAlarmPlayer:
         self.database = database
         self._device_id = None  # dispositivo donde empezó a sonar la última alarma
 
-    def play(self, uri):
+    def play(self, uri, volume=None):
+        """Transferir -> (volumen inicial, si se indica) -> reproducir `uri`.
+
+        Si fijar el volumen falla, se registra y se reproduce igualmente.
+        """
         try:
             if not self.client.is_configured:
                 raise SpotifyError("Spotify no está configurado (.env).")
@@ -31,6 +35,11 @@ class SpotifyAlarmPlayer:
             if not device_id:
                 raise SpotifyError("No hay ningún dispositivo de Spotify seleccionado.")
             self.client.transfer_playback(device_id, play=False)
+            if volume is not None:
+                try:
+                    self.client.set_volume(volume, device_id)
+                except Exception as exc:
+                    logger.warning("No se pudo fijar el volumen inicial (%s%%): %s", volume, exc)
             self.client.play(device_id, uri=uri)
         except Exception as exc:  # SpotifyError, ValueError o cualquier imprevisto
             logger.warning("Spotify falló (%s): %s", uri, exc)
@@ -50,4 +59,17 @@ class SpotifyAlarmPlayer:
             logger.warning("No se pudo pausar Spotify: %s", exc)
             return False
         logger.info("Spotify pausado")
+        return True
+
+    def set_volume(self, volume):
+        """Volumen del dispositivo donde suena la alarma. Nunca lanza excepciones."""
+        device_id = self._device_id
+        if not device_id:
+            return False
+        try:
+            self.client.set_volume(volume, device_id)
+        except Exception as exc:
+            logger.warning("No se pudo ajustar el volumen de Spotify a %s%%: %s", volume, exc)
+            return False
+        logger.debug("Volumen de Spotify: %s%%", volume)
         return True

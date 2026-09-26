@@ -16,6 +16,10 @@ Reglas:
 - STOP es idempotente: sin alarma sonando no hace nada.
 - Los snoozes viven solo en memoria: si la app se reinicia, se pierden (mejor
   eso que sonar a una hora incorrecta). Las alarmas normales no se tocan.
+- Volumen (solo Spotify): se fija el volumen inicial antes de reproducir y un
+  fade-in (fade.py) lo sube hasta el final. STOP, snooze o una alarma nueva
+  cancelan el fade en curso; cada vez que la alarma empieza a sonar, empieza
+  un fade nuevo desde el volumen inicial.
 """
 import logging
 import threading
@@ -23,24 +27,41 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple, Optional
 
+from fade import fade_plan, start_fade
+
 logger = logging.getLogger("alarms")
 
 SNOOZE_MINUTES = 10
 ALARM_FIELDS = ("id", "name", "time", "source", "spotify_uri")
+VOLUME_FIELDS = ("volume_start", "volume_end", "fade_minutes")  # opcionales
 
 
-def play_alarm_sound(alarm, player=None, spotify=None):
+def volume_settings(alarm):
+    """(volumen_inicial, plan_del_fade) o (None, []) si la alarma no los tiene."""
+    if any(alarm.get(key) is None for key in VOLUME_FIELDS):
+        return None, []
+    start, end = int(alarm["volume_start"]), int(alarm["volume_end"])
+    seconds = int(alarm["fade_minutes"]) * 60
+    if seconds <= 0:
+        return end, []  # sin fade: directamente al volumen final
+    return start, fade_plan(start, end, seconds)
+
+
+def play_alarm_sound(alarm, player=None, spotify=None, volume=None):
     """Hace sonar la alarma y devuelve "local", "spotify" o "fallback".
 
-    - Fuente "local": `player.play()` (el WAV).
-    - Fuente "spotify": `spotify.play(uri)`; si falla o no hay Spotify, el WAV.
+    - Fuente "local": `player.play()` (el WAV). `volume` no se usa todavía.
+    - Fuente "spotify": `spotify.play(uri)` (con `volume` inicial si se da);
+      si falla o no hay Spotify, el WAV.
     Nunca lanza excepciones: los fallos se registran.
     """
     name = alarm["name"]
     if alarm["source"] == "spotify":
         if spotify is not None and alarm["spotify_uri"]:
             try:
-                if spotify.play(alarm["spotify_uri"]):
+                uri = alarm["spotify_uri"]
+                started = spotify.play(uri) if volume is None else spotify.play(uri, volume=volume)
+                if started:
                     return "spotify"
             except Exception:
                 logger.exception("Spotify falló al disparar «%s»", name)
@@ -96,10 +117,12 @@ class StopResult(NamedTuple):
 
 class AlarmPlaybackManager:
     def __init__(self, player, spotify=None, schedule_once=None,
-                 clock=datetime.now, snooze_minutes=SNOOZE_MINUTES):
+                 clock=datetime.now, snooze_minutes=SNOOZE_MINUTES, fader=None):
         self.player = player                  # AudioPlayer local (WAV)
         self.spotify = spotify                # SpotifyAlarmPlayer o None
         self.schedule_once = schedule_once or timer_schedule_once
+        self.fader = fader or start_fade      # fader(set_volume, plan) -> objeto con cancel()
+        self._fade = None                     # fade-in en curso (solo uno a la vez)
         self.snooze_minutes = snooze_minutes
         self._clock = clock
         self._lock = threading.RLock()
@@ -121,8 +144,11 @@ class AlarmPlaybackManager:
 
     def start(self, alarm, manual=False, snoozes=0):
         """Hace sonar `alarm`, sustituyendo a la que sonara. Devuelve cómo suena."""
-        alarm = {key: alarm[key] for key in ALARM_FIELDS}
+        keys = set(alarm.keys())
+        alarm = {key: alarm[key] for key in ALARM_FIELDS + VOLUME_FIELDS
+                 if key in ALARM_FIELDS or key in keys}
         with self._lock:
+            self._cancel_fade()  # el fade de la alarma anterior, si lo hubiera
             suffix = " (prueba manual)" if manual else " (pospuesta)" if snoozes else ""
             logger.info("ALARMA ACTIVADA: %s%s", alarm["name"], suffix)
 
@@ -134,7 +160,8 @@ class AlarmPlaybackManager:
                             alarm["name"], previous.alarm["name"])
                 if previous.via != "spotify":
                     self._stop_local()
-            via = play_alarm_sound(alarm, self.player, self.spotify)
+            initial_volume, plan = volume_settings(alarm)
+            via = play_alarm_sound(alarm, self.player, self.spotify, volume=initial_volume)
             # Si la anterior sonaba en Spotify y la nueva no la ha reemplazado
             # allí, se pausa. (Pausar y luego reproducir en Spotify podría
             # llegar desordenado, por eso no se pausa si la nueva es Spotify.)
@@ -142,6 +169,8 @@ class AlarmPlaybackManager:
                 self._stop_spotify()
 
             self._active = ActiveAlarm(alarm, self._clock(), via, manual, snoozes)
+            if via == "spotify" and plan:
+                self._start_fade(plan)
             return via
 
     def stop(self):
@@ -151,6 +180,7 @@ class AlarmPlaybackManager:
             if active is None:
                 return None
             self._active = None
+            self._cancel_fade()  # antes de pausar: que no suba el volumen tras STOP
             silenced = self._stop_spotify() if active.via == "spotify" else self._stop_local()
             logger.info("ALARMA DETENIDA: %s", active.alarm["name"])
             return StopResult(active, silenced)
@@ -188,6 +218,18 @@ class AlarmPlaybackManager:
                 self.stop()
 
     # --- Internos ---
+
+    def _start_fade(self, plan):
+        try:
+            self._fade = self.fader(self.spotify.set_volume, plan)
+        except Exception:
+            logger.exception("No se pudo iniciar el fade-in; la alarma sigue sonando")
+            self._fade = None
+
+    def _cancel_fade(self):
+        fade, self._fade = self._fade, None
+        if fade is not None:
+            fade.cancel()
 
     def _schedule(self, alarm, run_at, snoozes):
         self._cancel_pending(alarm["id"])

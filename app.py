@@ -19,6 +19,23 @@ DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 MAX_NAME_LEN = 50
 SOURCES = ("local", "spotify")
+MAX_FADE_MINUTES = 30
+FADE_CHOICES = (0, 1, 2, 3, 5, 10, 15, 20, 30)  # opciones del desplegable
+
+
+def _int_field(form, key, default, low, high, label, errors):
+    """Entero del formulario entre low y high; si falta, `default`."""
+    raw = form.get(key, "").strip()
+    if raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        errors.append(f"{label} debe ser un número.")
+        return default
+    if not low <= value <= high:
+        errors.append(f"{label} debe estar entre {low} y {high}.")
+    return value
 
 
 def validate_alarm_form(form):
@@ -57,9 +74,29 @@ def validate_alarm_form(form):
     else:
         spotify_uri = None  # las alarmas locales no guardan URI
 
+    # Volumen: se guarda siempre (modelo simple), pero de momento solo lo usa Spotify.
+    volume_start = _int_field(form, "volume_start", db.DEFAULT_VOLUME_START, 0, 100,
+                              "El volumen inicial", errors)
+    volume_end = _int_field(form, "volume_end", db.DEFAULT_VOLUME_END, 0, 100,
+                            "El volumen final", errors)
+    fade_minutes = _int_field(form, "fade_minutes", db.DEFAULT_FADE_MINUTES, 0,
+                              MAX_FADE_MINUTES, "La duración del fade-in", errors)
+    if volume_start > volume_end:
+        errors.append("El volumen inicial no puede ser mayor que el final.")
+
     data = {"name": name, "time": time, "days": days,
-            "source": source, "spotify_uri": spotify_uri}
+            "source": source, "spotify_uri": spotify_uri,
+            "volume_start": volume_start, "volume_end": volume_end,
+            "fade_minutes": fade_minutes}
     return data, errors
+
+
+def describe_volume(alarm):
+    """Texto para la lista: "Volumen: 20 → 60 % · 5 min"."""
+    start, end, minutes = alarm["volume_start"], alarm["volume_end"], alarm["fade_minutes"]
+    if minutes == 0 or start == end:
+        return f"Volumen: {end} %"
+    return f"Volumen: {start} → {end} % · {minutes} min"
 
 
 def describe_source(alarm):
@@ -118,6 +155,7 @@ def create_app(config=None, player=None, spotify=None):
         app.extensions["spotify"], app.config["DATABASE"]
     )
     app.jinja_env.filters["describe_source"] = describe_source
+    app.jinja_env.filters["describe_volume"] = describe_volume
     app.register_blueprint(spotify_views.bp)
     # Estado de la alarma que suena (STOP / +10 MIN). Ver playback.py.
     playback = AlarmPlaybackManager(
@@ -139,8 +177,13 @@ def create_app(config=None, player=None, spotify=None):
     def render_form(data, errors=(), status=200, alarm_id=None):
         return render_template(
             "alarm_form.html", data=data, errors=errors, day_names=DAY_NAMES,
-            alarm_id=alarm_id,
+            alarm_id=alarm_id, fade_choices=FADE_CHOICES,
         ), status
+
+    def alarm_fields(data):
+        return (data["name"], data["time"], data["days"], data["source"],
+                data["spotify_uri"], data["volume_start"], data["volume_end"],
+                data["fade_minutes"])
 
     @app.get("/")
     def index():
@@ -156,12 +199,14 @@ def create_app(config=None, player=None, spotify=None):
             data, errors = validate_alarm_form(request.form)
             if errors:
                 return render_form(form_echo(data), errors, 400)
-            db.create_alarm(data["name"], data["time"], data["days"],
-                            data["source"], data["spotify_uri"])
+            db.create_alarm(*alarm_fields(data))
             flash(f"Alarma «{data['name']}» creada.")
             return redirect(url_for("index"))
         return render_form({"name": "", "time": "07:00", "days": [],
-                            "source": "local", "spotify_uri": ""})
+                            "source": "local", "spotify_uri": "",
+                            "volume_start": db.DEFAULT_VOLUME_START,
+                            "volume_end": db.DEFAULT_VOLUME_END,
+                            "fade_minutes": db.DEFAULT_FADE_MINUTES})
 
     @app.route("/alarms/<int:alarm_id>/edit", methods=["GET", "POST"])
     def edit_alarm(alarm_id):
@@ -172,14 +217,16 @@ def create_app(config=None, player=None, spotify=None):
             data, errors = validate_alarm_form(request.form)
             if errors:
                 return render_form(form_echo(data), errors, 400, alarm_id)
-            db.update_alarm(alarm_id, data["name"], data["time"], data["days"],
-                            data["source"], data["spotify_uri"])
+            db.update_alarm(alarm_id, *alarm_fields(data))
             flash(f"Alarma «{data['name']}» guardada.")
             return redirect(url_for("index"))
         days = [int(d) for d in alarm["days"].split(",")] if alarm["days"] else []
         return render_form({"name": alarm["name"], "time": alarm["time"], "days": days,
                             "source": alarm["source"],
-                            "spotify_uri": alarm["spotify_uri"] or ""}, alarm_id=alarm_id)
+                            "spotify_uri": alarm["spotify_uri"] or "",
+                            "volume_start": alarm["volume_start"],
+                            "volume_end": alarm["volume_end"],
+                            "fade_minutes": alarm["fade_minutes"]}, alarm_id=alarm_id)
 
     def form_echo(data):
         """Si hay errores, se vuelve a mostrar lo que escribió el usuario."""

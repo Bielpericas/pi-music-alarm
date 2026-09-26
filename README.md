@@ -371,6 +371,35 @@ Si algo falla (Spotify sin configurar o sin vincular, ningún dispositivo selecc
 Código: `spotify_player.py` (`SpotifyAlarmPlayer`) hace ese flujo usando `spotify_client.py`.
 `scheduler.fire_alarm()` solo elige entre el WAV y `SpotifyAlarmPlayer`, y aplica el respaldo; no hace HTTP.
 
+## Volumen y fade-in (alarmas Spotify)
+
+Cada alarma Spotify tiene **volumen inicial**, **volumen final** y **duración del fade-in**. Por defecto
+son 20 % → 60 % en 5 min, y en la lista se ve como `Volumen: 20 → 60 % · 5 min`. Se configuran en
+crear/editar alarma, dentro del bloque de Spotify, con dos deslizadores y un desplegable (0–30 min;
+0 = directo al volumen final).
+
+Al sonar:
+
+1. Se transfiere la reproducción al dispositivo, se fija el **volumen inicial** y empieza la música.
+2. Cada **15 s** sube un poco el volumen (`PUT /v1/me/player/volume`) hasta llegar **exactamente** al
+   volumen final al acabar el fade. Con 20 → 60 % en 5 min son 20 peticiones, muy lejos de los
+   límites de la API.
+3. **STOP** y **+10 MIN** cancelan el fade al momento. Al volver a sonar tras un snooze empieza un
+   fade nuevo desde el volumen inicial. Si otra alarma sustituye a la actual, se cancela su fade.
+4. Si ajustar el volumen falla (403, sin red…), se registra, el fade se detiene y **la música sigue**
+   con el último volumen conseguido. La alarma no se para.
+
+Las alarmas locales guardan estos valores pero todavía no los usan (el WAV suena igual que antes).
+
+**Raspotify / librespot**: para que Spotify pueda cambiar el volumen, en `/etc/raspotify/conf` **no**
+uses `LIBRESPOT_VOLUME_CTRL=fixed` (con `fixed` el volumen no cambia). Con el valor por defecto (`log`)
+el volumen es logarítmico: 20 % suena bastante bajo, lo cual va bien para despertar suave. Tras
+cambiar la configuración: `sudo systemctl restart raspotify`.
+
+Código: `fade.py` (`fade_plan` calcula los pasos; `VolumeFade` los aplica en un único hilo que se
+cancela con un `Event`, sin timers huérfanos). `AlarmPlaybackManager` crea y cancela el fade;
+`SpotifyAlarmPlayer.set_volume()` hace la llamada vía `spotify_client.py`.
+
 ## Alarma sonando: STOP y +10 MIN
 
 Cuando una alarma suena (a su hora o con **Probar**), la página principal muestra arriba un recuadro con
@@ -411,6 +440,7 @@ spotify_client.py   # todo el HTTP con Spotify: OAuth, refresh, errores
 spotify_views.py    # rutas /spotify/...
 spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> reproducir
 playback.py         # alarma sonando: estado, STOP y snooze
+fade.py             # fade-in de volumen (Spotify)
 serve.py            # arranque de producción (waitress, red local)
 deploy/             # plantilla systemd + install-service.sh
 .env.example        # plantilla de configuración (copiar a .env)
@@ -424,7 +454,8 @@ instance/           # base de datos y log local (no se suben a git)
 ```
 
 Cada alarma guarda `name`, `time` (`HH:MM`), `days` (p. ej. `"0,2,4"`, donde 0 = lunes y vacío = una vez),
-`enabled`, `last_triggered`, `source` (`local` o `spotify`) y `spotify_uri`.
+`enabled`, `last_triggered`, `source` (`local` o `spotify`), `spotify_uri`,
+`volume_start`, `volume_end` y `fade_minutes`.
 
 ## Próximos pasos
 

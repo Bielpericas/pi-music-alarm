@@ -194,3 +194,18 @@ code { overflow-wrap: anywhere; }
   margin: 0 0 12px;
 }
 .snooze-info form { margin: 0; }
+
+/* Volumen y fade-in (alarmas Spotify) */
+.alarm-volume { color: var(--muted); font-size: 0.85rem; }
+.volume-controls { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.volume-controls input[type="range"] { width: 100%; height: 32px; accent-color: #1db954; }
+.volume-controls output { font-weight: 700; }
+.volume-controls select {
+  font: inherit;
+  min-height: 44px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+}

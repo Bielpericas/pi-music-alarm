@@ -311,8 +311,10 @@ class AlarmSourceAppTest(unittest.TestCase):
         self.select_device("dev")
         self.create_spotify()
         self.assertIn("reproduciendo en Spotify", self.probar())
-        self.assertEqual(self.spotify.method_calls, [
+        self.app.extensions["playback"].stop()  # cancela el fade-in que arranca Probar
+        self.assertEqual(self.spotify.method_calls[:3], [
             mock.call.transfer_playback("dev", play=False),
+            mock.call.set_volume(20, "dev"),  # volumen inicial por defecto (fase de volumen)
             mock.call.play("dev", uri=PLAYLIST_URI),
         ])
         self.local.play.assert_not_called()

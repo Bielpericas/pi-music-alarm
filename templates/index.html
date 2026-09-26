@@ -49,6 +49,9 @@
           <span class="alarm-source">
             <span class="badge {% if alarm.source == 'spotify' %}badge-spotify{% endif %}">{{ alarm | describe_source }}</span>
           </span>
+          {% if alarm.source == 'spotify' %}
+            <span class="alarm-volume">{{ alarm | describe_volume }}</span>
+          {% endif %}
           {% if alarm.last_triggered %}
             <span class="alarm-last">Última vez: {{ alarm.last_triggered }}</span>
           {% endif %}
