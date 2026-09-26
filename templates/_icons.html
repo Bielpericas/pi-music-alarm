@@ -1,0 +1,45 @@
+{# Iconos SVG propios (inline, sin librerías externas). Heredan el color del texto. #}
+{% macro icon(name, label=none) -%}
+<svg class="icon" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+     stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+     {% if label %}role="img" aria-label="{{ label }}"{% else %}aria-hidden="true" focusable="false"{% endif %}>
+  {%- if name == "alarm" -%}
+    <circle cx="12" cy="13" r="7"/><path d="M12 9.5V13l2.2 1.6M5 4.5 3 6.5M19 4.5l2 2"/>
+  {%- elif name == "music" -%}
+    <path d="M4 15v-2M8 18V8M12 20V4M16 17V9M20 14v-2"/>
+  {%- elif name == "plus" -%}
+    <path d="M12 5v14M5 12h14"/>
+  {%- elif name == "more" -%}
+    <circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>
+  {%- elif name == "edit" -%}
+    <path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>
+  {%- elif name == "play" -%}
+    <path d="M8 5.5v13l10-6.5-10-6.5z"/>
+  {%- elif name == "pause" -%}
+    <path d="M8 5v14M16 5v14"/>
+  {%- elif name == "trash" -%}
+    <path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/>
+  {%- elif name == "check" -%}
+    <path d="M5 12.5 10 17l9-10"/>
+  {%- elif name == "refresh" -%}
+    <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4.5h-4.5"/>
+  {%- elif name == "transfer" -%}
+    <path d="M4 8h13l-3-3M20 16H7l3 3"/>
+  {%- elif name == "speaker" -%}
+    <rect x="6" y="3" width="12" height="18" rx="2.5"/><circle cx="12" cy="14" r="3"/><circle cx="12" cy="7.5" r="0.9" fill="currentColor"/>
+  {%- elif name == "offline" -%}
+    <path d="M3 3l18 18M8.5 16.5a5 5 0 0 1 7 0M5 12.5a10 10 0 0 1 4.2-2.4M19 12.5a10 10 0 0 0-3-2M2 8.5a15 15 0 0 1 5-3M22 8.5A15 15 0 0 0 11 4.6"/>
+  {%- elif name == "snooze" -%}
+    <path d="M9 4h6l-6 7h6M5 20h14"/>
+  {%- endif -%}
+</svg>
+{%- endmacro %}
+
+{# Logotipo de Groove: sol saliendo por el horizonte, con surcos de vinilo. #}
+{% macro logo(size=28) -%}
+<svg class="logo" viewBox="0 0 32 32" width="{{ size }}" height="{{ size }}" aria-hidden="true" focusable="false">
+  <path d="M6 21a10 10 0 0 1 20 0" fill="none" stroke="var(--sun)" stroke-width="2" stroke-linecap="round" opacity=".45"/>
+  <path d="M10 21a6 6 0 0 1 12 0z" fill="var(--sun)"/>
+  <path d="M4 24h24" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>
+</svg>
+{%- endmacro %}

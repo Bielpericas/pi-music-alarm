@@ -474,6 +474,33 @@ Código: `playback.py` (`AlarmPlaybackManager`) guarda el estado y hace start / 
 (los hilos de waitress y de APScheduler no se pisan). El scheduler solo llama a `manager.start(alarm)`;
 las vistas solo llaman a `stop()` / `snooze()`. El snooze es un job de APScheduler en memoria.
 
+## Interfaz y app en el móvil (PWA)
+
+La interfaz está pensada primero para el móvil: oscura, con navegación inferior (**Alarmas** /
+**Spotify**) y, en pantallas anchas, navegación arriba y un ancho máximo de lectura.
+
+- **Pantalla principal**: arriba la **próxima alarma** (hora grande y cuánto falta; el sol del
+  horizonte sube según se acerca). Debajo, la lista con un interruptor para activar o desactivar cada
+  alarma y un menú **⋯** con Editar / Probar / Borrar. El botón **Nueva alarma** está siempre a mano.
+- **Alarma sonando**: ocupa la parte superior con un **STOP** enorme y **+10 MIN** como opción
+  secundaria. Si está pospuesta: "Pospuesta hasta HH:MM" con **Cancelar**.
+- **Formulario**: días como chips **L M X J V S D**, selector **Sonido local / Spotify** (los campos de
+  Spotify solo aparecen si eliges Spotify) y deslizadores de volumen con su porcentaje.
+- Sin JavaScript todo sigue funcionando con formularios normales. El JS solo mejora (mostrar/ocultar
+  campos, porcentajes, menús, comprobar la conexión cada 10 s).
+- Sin recursos externos: tipografía del sistema, iconos SVG propios, sin CDN ni Google Fonts.
+
+**Instalar como app**: en el móvil, abre Groove en el navegador y usa **Añadir a pantalla de inicio**
+(Safari en iOS, o el menú de Chrome en Android). Se abre a pantalla completa con su icono.
+
+- El *service worker* solo guarda la "carcasa" estática (CSS, JS, iconos). **Nunca** guarda alarmas,
+  estado de reproducción, Spotify ni formularios. Si la Raspberry no responde, Groove lo dice ("No hay
+  conexión con Groove"); no hay modo offline de mentira.
+- Los navegadores solo activan el *service worker* en HTTPS o en `127.0.0.1`/`localhost`. Accediendo
+  por `http://<IP-de-la-Pi>:5000` la app funciona igual y se puede añadir a la pantalla de inicio, pero
+  sin *service worker* (Android Chrome puede ofrecerlo solo como acceso directo).
+- Los iconos se generan con `python tools/make_icons.py` (sin dependencias).
+
 ## Estructura
 
 ```
@@ -491,7 +518,8 @@ deploy/             # plantilla systemd + install-service.sh
 .env.example        # plantilla de configuración (copiar a .env)
 schema.sql          # tablas "alarms", "spotify_auth" y "settings"
 sounds/             # alarm.wav (no se sube a git)
-tools/              # make_test_sound.py: genera un WAV de prueba
+tools/              # make_test_sound.py (WAV de prueba), make_icons.py (iconos PWA)
+ui.py               # ayudas de presentación (próxima alarma, textos)
 templates/          # HTML (Jinja2)
 static/             # CSS y un poco de JS (confirmar borrado)
 tests/              # tests con unittest

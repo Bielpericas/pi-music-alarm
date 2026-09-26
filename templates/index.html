@@ -1,11 +1,14 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Alarmas · Groove{% endblock %}
 {% block content %}
-<div data-playback-key="{{ playback_key }}" data-playback-url="{{ url_for('playback_state') }}" hidden></div>
 
+{# 1. Alarma sonando: vista dominante con STOP y +10 MIN. #}
 {% if active %}
-  <section class="ringing" aria-live="assertive">
+  <section class="ringing" aria-live="assertive" aria-labelledby="ringing-title">
+    <div class="ringing-pulse" aria-hidden="true"></div>
     <p class="ringing-label">ALARMA</p>
-    <p class="ringing-title">{{ active.alarm.time }} · {{ active.alarm.name }}</p>
+    <h1 id="ringing-title" class="ringing-title">{{ active.alarm.time }} · {{ active.alarm.name }}</h1>
     <p class="ringing-detail">
       {% if active.via == "connecting" %}Conectando con Spotify…
       {% elif active.via == "spotify" %}{{ active.alarm | describe_source }}
@@ -14,69 +17,113 @@
       {% if active.snoozes %} · pospuesta {{ active.snoozes }} {{ "vez" if active.snoozes == 1 else "veces" }}{% endif %}
       {% if active.manual %} · prueba{% endif %}
     </p>
-    <div class="ringing-actions">
-      <form method="post" action="{{ url_for('stop_alarm') }}">
-        <button class="btn btn-big btn-stop" type="submit">STOP</button>
-      </form>
-      <form method="post" action="{{ url_for('snooze_alarm') }}">
-        <button class="btn btn-big btn-snooze" type="submit">+10 MIN</button>
-      </form>
+    <form method="post" action="{{ url_for('stop_alarm') }}" class="ringing-stop">
+      <button class="btn btn-stop" type="submit">STOP</button>
+    </form>
+    <form method="post" action="{{ url_for('snooze_alarm') }}">
+      <button class="btn btn-snooze" type="submit">{{ icon("snooze") }}<span>+10 MIN</span></button>
+    </form>
+  </section>
+{% endif %}
+
+{# 2. Alarmas pospuestas. #}
+{% for snooze in snoozes %}
+  <section class="snoozed" aria-label="Alarma pospuesta">
+    <div>
+      <h2 class="snoozed-title">Pospuesta hasta {{ snooze.run_at.strftime("%H:%M") }}</h2>
+      <p class="snoozed-detail">«{{ snooze.alarm.name }}» vuelve a sonar a las {{ snooze.run_at.strftime("%H:%M") }}.</p>
+    </div>
+    <form method="post" action="{{ url_for('cancel_snooze', alarm_id=snooze.alarm.id) }}">
+      <button class="btn btn-quiet" type="submit">Cancelar</button>
+    </form>
+  </section>
+{% endfor %}
+
+{# 3. Próxima alarma, con el sol subiendo por el horizonte según se acerca. #}
+{% if upcoming and not active %}
+  <section class="next-alarm" aria-labelledby="next-title">
+    {# Lienzo de 640 de ancho y 110 de alto: nunca se amplía; en móvil solo se recortan los lados. #}
+    <svg class="horizon" viewBox="0 0 640 110" preserveAspectRatio="xMidYMax slice" aria-hidden="true" focusable="false">
+      <defs>
+        <radialGradient id="glow" cx="50%" cy="100%" r="45%">
+          <stop offset="0" stop-color="#ff9a52" stop-opacity="{{ 0.15 + 0.35 * sun_height }}"/>
+          <stop offset="1" stop-color="#ff9a52" stop-opacity="0"/>
+        </radialGradient>
+        <clipPath id="sky"><rect x="0" y="0" width="640" height="92"/></clipPath>
+      </defs>
+      <rect x="0" y="0" width="640" height="110" fill="url(#glow)"/>
+      <circle cx="320" cy="{{ (120 - 62 * sun_height) | round(1) }}" r="26" fill="var(--sun)" clip-path="url(#sky)"/>
+      <line x1="0" y1="92" x2="640" y2="92" stroke="var(--line-strong)" stroke-width="1.5"/>
+    </svg>
+    <div class="next-body">
+      <h2 id="next-title" class="next-label">Próxima alarma</h2>
+      <p class="next-time">{{ upcoming.time }}</p>
+      <p class="next-name">{{ upcoming.name }}</p>
+      <p class="next-when">{{ upcoming_day }} · {{ upcoming_countdown }}</p>
+      <p class="next-meta">
+        <span class="badge {% if upcoming.source == 'spotify' %}badge-spotify{% endif %}">{{ upcoming | describe_source }}</span>
+        {% if upcoming.source == 'spotify' %}<span class="next-volume">{{ upcoming | describe_volume }}</span>{% endif %}
+      </p>
     </div>
   </section>
 {% endif %}
 
-{% for snooze in snoozes %}
-  <div class="flash snooze-info">
-    <span>⏰ «{{ snooze.alarm.name }}» pospuesta: vuelve a sonar a las {{ snooze.run_at.strftime("%H:%M") }}.</span>
-    <form method="post" action="{{ url_for('cancel_snooze', alarm_id=snooze.alarm.id) }}">
-      <button class="btn" type="submit">Cancelar</button>
-    </form>
-  </div>
-{% endfor %}
-
-<div class="heading">
-  <h1>Alarmas</h1>
-  <a class="btn btn-primary" href="{{ url_for('new_alarm') }}">+ Nueva</a>
+{# 4. Lista de alarmas. #}
+<div class="section-head">
+  {% if active %}<h2>Alarmas</h2>{% else %}<h1>Alarmas</h1>{% endif %}
 </div>
 
 {% if alarms %}
   <ul class="alarm-list">
     {% for alarm in alarms %}
       <li class="alarm {% if not alarm.enabled %}alarm-off{% endif %}">
-        <div class="alarm-info">
-          <span class="alarm-time">{{ alarm.time }}</span>
-          <span class="alarm-name">{{ alarm.name }}</span>
-          <span class="alarm-days">{{ alarm.days | format_days }}</span>
-          <span class="alarm-source">
+        <div class="alarm-main">
+          <p class="alarm-time">{{ alarm.time }}</p>
+          <p class="alarm-name">{{ alarm.name }}</p>
+          <p class="alarm-meta">
+            <span class="alarm-days">{{ alarm.days | format_days }}</span>
             <span class="badge {% if alarm.source == 'spotify' %}badge-spotify{% endif %}">{{ alarm | describe_source }}</span>
-          </span>
+          </p>
           {% if alarm.source == 'spotify' %}
-            <span class="alarm-volume">{{ alarm | describe_volume }}</span>
-          {% endif %}
-          {% if alarm.last_triggered %}
-            <span class="alarm-last">Última vez: {{ alarm.last_triggered }}</span>
+            <p class="alarm-volume">{{ alarm | describe_volume }}</p>
           {% endif %}
         </div>
-        <div class="alarm-actions">
-          <a class="btn" href="{{ url_for('edit_alarm', alarm_id=alarm.id) }}">Editar</a>
-          <form method="post" action="{{ url_for('test_alarm', alarm_id=alarm.id) }}">
-            <button class="btn" type="submit">Probar</button>
-          </form>
-          <form method="post" action="{{ url_for('toggle_alarm', alarm_id=alarm.id) }}">
-            <button class="btn {% if alarm.enabled %}btn-on{% endif %}" type="submit"
-                    title="{{ 'Pulsa para desactivar' if alarm.enabled else 'Pulsa para activar' }}">
-              {{ 'Activada' if alarm.enabled else 'Desactivada' }}
-            </button>
-          </form>
-          <form method="post" action="{{ url_for('delete_alarm', alarm_id=alarm.id) }}"
-                data-confirm="¿Borrar la alarma «{{ alarm.name }}»?">
-            <button class="btn btn-danger" type="submit">Borrar</button>
-          </form>
-        </div>
+
+        <form method="post" action="{{ url_for('toggle_alarm', alarm_id=alarm.id) }}" class="alarm-toggle">
+          <button class="switch" type="submit" role="switch"
+                  aria-checked="{{ 'true' if alarm.enabled else 'false' }}"
+                  aria-label="{{ alarm.name }} a las {{ alarm.time }}: {{ 'activada' if alarm.enabled else 'desactivada' }}"
+                  title="{{ 'Pulsa para desactivar' if alarm.enabled else 'Pulsa para activar' }}">
+            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+            <span class="visually-hidden">{{ 'Activada' if alarm.enabled else 'Desactivada' }}</span>
+          </button>
+        </form>
+
+        <details class="menu">
+          <summary aria-label="Más acciones para {{ alarm.name }}">{{ icon("more") }}</summary>
+          <div class="menu-panel">
+            <a class="menu-item" href="{{ url_for('edit_alarm', alarm_id=alarm.id) }}">{{ icon("edit") }}<span>Editar</span></a>
+            <form method="post" action="{{ url_for('test_alarm', alarm_id=alarm.id) }}">
+              <button class="menu-item" type="submit">{{ icon("play") }}<span>Probar</span></button>
+            </form>
+            <form method="post" action="{{ url_for('delete_alarm', alarm_id=alarm.id) }}"
+                  data-confirm="¿Borrar la alarma «{{ alarm.name }}»?">
+              <button class="menu-item menu-danger" type="submit">{{ icon("trash") }}<span>Borrar</span></button>
+            </form>
+            {% if alarm.last_triggered %}
+              <p class="menu-note">Última vez: {{ alarm.last_triggered }}</p>
+            {% endif %}
+          </div>
+        </details>
       </li>
     {% endfor %}
   </ul>
 {% else %}
-  <p class="empty">No hay alarmas todavía.</p>
+  <div class="empty">
+    <p>No hay alarmas todavía.</p>
+    <p class="muted">Crea la primera y Groove te despertará con un sonido o con tu música de Spotify.</p>
+  </div>
 {% endif %}
+
+<a class="fab" href="{{ url_for('new_alarm') }}">{{ icon("plus") }}<span>Nueva alarma</span></a>
 {% endblock %}

@@ -1,27 +1,71 @@
+{% from "_icons.html" import icon, logo %}
+{% set section = "spotify" if request.blueprint == "spotify" else "alarms" %}
 <!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Despertador{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}Groove{% endblock %}</title>
+  <meta name="description" content="Groove: despertador con música para Raspberry Pi.">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0f1830">
+  <link rel="manifest" href="{{ url_for('manifest') }}">
+  <link rel="icon" href="{{ url_for('static', filename='icons/groove.svg') }}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Groove">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
-  <header class="topbar">
-    <a href="{{ url_for('index') }}" class="brand">⏰ Despertador</a>
-    <nav>
-      <a href="{{ url_for('index') }}">Alarmas</a>
-      <a href="{{ url_for('spotify.index') }}">Spotify</a>
+<body data-section="{{ section }}">
+  <a class="skip-link" href="#main">Ir al contenido</a>
+
+  <header class="app-header">
+    <a href="{{ url_for('index') }}" class="brand">{{ logo() }}<span>Groove</span></a>
+    <nav class="nav nav-top" aria-label="Secciones">
+      <a href="{{ url_for('index') }}" {% if section == "alarms" %}aria-current="page"{% endif %}>Alarmas</a>
+      <a href="{{ url_for('spotify.index') }}" {% if section == "spotify" %}aria-current="page"{% endif %}>Spotify</a>
     </nav>
+    <p class="status" data-connection role="status">
+      <span class="status-dot" aria-hidden="true"></span><span data-connection-text>En línea</span>
+    </p>
   </header>
-  <main class="container">
+
+  {# Aviso real de conexión: lo muestra app.js si Groove deja de responder. #}
+  <div class="offline-banner" data-offline-banner hidden>
+    {{ icon("offline") }}
+    <p><strong>No hay conexión con Groove.</strong> Comprueba que la Raspberry está encendida y en
+      la misma red. Los cambios no se guardarán hasta que vuelva.</p>
+  </div>
+
+  {# Estado de reproducción para el polling de app.js (todas las páginas). #}
+  <div hidden data-playback-key="{{ playback_key }}" data-playback-url="{{ url_for('playback_state') }}"
+       data-home-url="{{ url_for('index') }}"></div>
+
+  <main id="main" class="page">
     {% with messages = get_flashed_messages(with_categories=true) %}
-      {% for category, message in messages %}
-        <p class="flash {% if category == 'error' %}flash-error{% endif %}">{{ message }}</p>
-      {% endfor %}
+      {% if messages %}
+        <div class="flashes">
+          {% for category, message in messages %}
+            <p class="flash {% if category == 'error' %}flash-error{% endif %}"
+               {% if category == 'error' %}role="alert"{% else %}role="status"{% endif %}>{{ message }}</p>
+          {% endfor %}
+        </div>
+      {% endif %}
     {% endwith %}
     {% block content %}{% endblock %}
   </main>
+
+  <nav class="nav nav-bottom" aria-label="Secciones">
+    <a href="{{ url_for('index') }}" {% if section == "alarms" %}aria-current="page"{% endif %}>
+      {{ icon("alarm") }}<span>Alarmas</span>
+    </a>
+    <a href="{{ url_for('spotify.index') }}" {% if section == "spotify" %}aria-current="page"{% endif %}>
+      {{ icon("music") }}<span>Spotify</span>
+    </a>
+  </nav>
+
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </body>
 </html>

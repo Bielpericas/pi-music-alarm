@@ -1,85 +1,103 @@
 {% extends "base.html" %}
 {% set editing = alarm_id is not none %}
-{% block title %}{{ "Editar alarma" if editing else "Nueva alarma" }} · Despertador{% endblock %}
+{% block title %}{{ "Editar alarma" if editing else "Nueva alarma" }} · Groove{% endblock %}
 {% block content %}
-<h1>{{ "Editar alarma" if editing else "Nueva alarma" }}</h1>
+<div class="section-head">
+  <h1>{{ "Editar alarma" if editing else "Nueva alarma" }}</h1>
+</div>
 
 {% if errors %}
-  <ul class="errors">
-    {% for error in errors %}<li>{{ error }}</li>{% endfor %}
-  </ul>
+  <div class="flash flash-error" role="alert">
+    <p>Revisa estos campos:</p>
+    <ul>
+      {% for error in errors %}<li>{{ error }}</li>{% endfor %}
+    </ul>
+  </div>
 {% endif %}
 
-<form method="post" class="alarm-form">
-  <label for="name">Nombre</label>
-  <input id="name" name="name" type="text" maxlength="50" required
-         value="{{ data.name }}" placeholder="Trabajo">
+<form method="post" class="alarm-form" data-alarm-form>
+  <div class="field field-time">
+    <label for="time">Hora</label>
+    <input id="time" name="time" type="time" required value="{{ data.time }}">
+  </div>
 
-  <label for="time">Hora</label>
-  <input id="time" name="time" type="time" required value="{{ data.time }}">
+  <div class="field">
+    <label for="name">Nombre</label>
+    <input id="name" name="name" type="text" maxlength="50" required autocomplete="off"
+           value="{{ data.name }}" placeholder="Trabajo">
+  </div>
 
-  <fieldset>
-    <legend>Repetir (ninguno = una vez)</legend>
-    <div class="days">
+  <fieldset class="field">
+    <legend>Repetir</legend>
+    <div class="day-chips">
       {% for day in day_names %}
-        <label class="day">
+        <label class="chip">
           <input type="checkbox" name="days" value="{{ loop.index0 }}"
                  {% if loop.index0 in data.days %}checked{% endif %}>
-          <span>{{ day }}</span>
+          <span aria-hidden="true">{{ day_letters[loop.index0] }}</span>
+          <span class="visually-hidden">{{ day_full[loop.index0] }}</span>
         </label>
       {% endfor %}
     </div>
+    <p class="hint">Sin días marcados, suena una sola vez.</p>
   </fieldset>
 
-  <fieldset>
+  <fieldset class="field">
     <legend>Sonido</legend>
-    <div class="source-options">
-      <label class="source-option">
+    <div class="segmented">
+      <label>
         <input type="radio" name="source" value="local"
                {% if data.source != "spotify" %}checked{% endif %}>
-        <span>Local (WAV)</span>
+        <span>Sonido local</span>
       </label>
-      <label class="source-option">
+      <label>
         <input type="radio" name="source" value="spotify"
                {% if data.source == "spotify" %}checked{% endif %}>
         <span>Spotify</span>
       </label>
     </div>
-    <div class="spotify-field" data-spotify-field>
-      <label for="spotify_uri">URL o URI de Spotify (canción, álbum o playlist)</label>
-      <input id="spotify_uri" name="spotify_uri" type="text" autocomplete="off"
-             value="{{ data.spotify_uri or '' }}"
-             placeholder="https://open.spotify.com/playlist/...">
-      <p class="muted small">Se reproduce en el dispositivo elegido en la sección Spotify.
-        Si Spotify falla, suena el WAV local.</p>
 
-      <div class="volume-controls">
-        <label for="volume_start">Volumen inicial:
+    <div class="spotify-field" data-spotify-field>
+      <div class="field">
+        <label for="spotify_uri">Canción, álbum o playlist</label>
+        <input id="spotify_uri" name="spotify_uri" type="text" inputmode="url" autocomplete="off"
+               autocapitalize="off" spellcheck="false"
+               value="{{ data.spotify_uri or '' }}"
+               placeholder="https://open.spotify.com/playlist/…">
+        <p class="hint">Pega el enlace de Spotify (Compartir → Copiar enlace). Suena en el dispositivo
+          elegido en la sección Spotify; si falla, suena el sonido local.</p>
+      </div>
+
+      <div class="field">
+        <label for="volume_start">Volumen al empezar
           <output for="volume_start" data-volume-output>{{ data.volume_start }}</output> %</label>
         <input id="volume_start" name="volume_start" type="range" min="0" max="100" step="5"
                value="{{ data.volume_start }}">
+      </div>
 
-        <label for="volume_end">Volumen final:
+      <div class="field">
+        <label for="volume_end">Volumen final
           <output for="volume_end" data-volume-output>{{ data.volume_end }}</output> %</label>
         <input id="volume_end" name="volume_end" type="range" min="0" max="100" step="5"
                value="{{ data.volume_end }}">
+      </div>
 
-        <label for="fade_minutes">Subida progresiva (fade-in)</label>
+      <div class="field">
+        <label for="fade_minutes">Subida progresiva</label>
         <select id="fade_minutes" name="fade_minutes">
           {% set choices = fade_choices if data.fade_minutes in fade_choices
                            else (fade_choices + (data.fade_minutes,)) | sort %}
           {% for minutes in choices %}
-            <option value="{{ minutes }}" {% if minutes == data.fade_minutes %}selected{% endif %}>
-              {{ "Sin fade (directo al volumen final)" if minutes == 0 else minutes ~ " min" }}
-            </option>
+            <option value="{{ minutes }}" {% if minutes == data.fade_minutes %}selected{% endif %}>{{ minutes | fade_label }}</option>
           {% endfor %}
         </select>
+        <p class="hint" data-fade-summary hidden></p>
       </div>
     </div>
   </fieldset>
 
   <div class="form-actions">
-    <a class="btn" href="{{ url_for('index') }}">Cancelar</a>
+    <a class="btn btn-quiet" href="{{ url_for('index') }}">Cancelar</a>
     <button class="btn btn-primary" type="submit">Guardar</button>
   </div>
 </form>

@@ -1,93 +1,115 @@
 {% extends "base.html" %}
-{% block title %}Spotify · Despertador{% endblock %}
+{% from "_icons.html" import icon %}
+{% block title %}Spotify · Groove{% endblock %}
 {% block content %}
-<h1>Spotify</h1>
+<div class="section-head">
+  <h1>Spotify</h1>
+  {% if connected %}
+    <a class="btn btn-quiet btn-small" href="{{ url_for('spotify.index') }}">{{ icon("refresh") }}<span>Actualizar</span></a>
+  {% endif %}
+</div>
 
-<section class="card">
+{# Estado de la cuenta. #}
+<section class="card account {% if connected %}is-connected{% endif %}">
   {% if not configured %}
-    <p><span class="badge badge-off">No configurado</span></p>
-    <p class="muted">Faltan <code>SPOTIFY_CLIENT_ID</code> y <code>SPOTIFY_CLIENT_SECRET</code> en
-      el fichero <code>.env</code>. Mira el README.</p>
+    <p class="account-state"><span class="dot dot-off" aria-hidden="true"></span>No configurado</p>
+    <p class="muted">Faltan <code>SPOTIFY_CLIENT_ID</code> y <code>SPOTIFY_CLIENT_SECRET</code> en el
+      fichero <code>.env</code> de la Raspberry. Los pasos están en el README.</p>
   {% elif connected %}
-    <p><span class="badge badge-on">Conectado</span></p>
+    <p class="account-state"><span class="dot dot-on" aria-hidden="true"></span>Conectado</p>
+    <p class="muted">Tu cuenta de Spotify está vinculada a Groove.</p>
     <form method="post" action="{{ url_for('spotify.disconnect') }}"
           data-confirm="¿Desvincular tu cuenta de Spotify?">
-      <button class="btn" type="submit">Desconectar</button>
+      <button class="btn btn-quiet btn-small" type="submit">Desconectar</button>
     </form>
   {% else %}
-    <p><span class="badge badge-off">No conectado</span></p>
+    <p class="account-state"><span class="dot dot-off" aria-hidden="true"></span>No conectado</p>
+    <p class="muted">Vincula tu cuenta para que las alarmas puedan sonar con tu música.</p>
     <a class="btn btn-primary" href="{{ url_for('spotify.connect') }}">Conectar Spotify</a>
-    <p class="muted small">Redirect URI: <code>{{ redirect_uri }}</code></p>
+    <details class="tech">
+      <summary>Detalles técnicos</summary>
+      <p>Redirect URI: <code>{{ redirect_uri }}</code>. Abre Groove en <code>127.0.0.1</code> (o con un
+        túnel SSH desde el PC) para vincular la cuenta.</p>
+    </details>
   {% endif %}
 </section>
 
 {% if error %}
-  <p class="flash flash-error">{{ error }}</p>
+  <p class="flash flash-error" role="alert">{{ error }}</p>
 {% endif %}
 
 {% if connected %}
-  <section class="card">
-    <div class="heading">
-      <h2>Dispositivos</h2>
-      <a class="btn" href="{{ url_for('spotify.index') }}">Actualizar</a>
-    </div>
-    <p class="muted small">
-      Activo: <strong>{{ active.name if active else "ninguno" }}</strong>
-    </p>
+  {# Dónde suenan las alarmas. #}
+  <section class="card target">
+    {% if selected_id %}
+      <div class="target-main">
+        <span class="target-icon">{{ icon("speaker") }}</span>
+        <div>
+          <p class="target-line">Dispositivo seleccionado: <strong>{{ selected_name or selected_id }}</strong></p>
+          <p class="target-state {% if selected_available %}is-on{% endif %}">
+            Aquí suenan las alarmas ·
+            {{ "disponible ahora" if selected_available else "no disponible ahora" }}
+          </p>
+        </div>
+      </div>
+      {% if selected_name %}
+        <p class="hint">Si «{{ selected_name }}» cambia de ID (por ejemplo, al reiniciar Raspotify), las
+          alarmas lo buscan por su nombre y reintentan unos segundos.</p>
+      {% endif %}
+      <div class="test-controls" aria-label="Probar el dispositivo">
+        <form method="post" action="{{ url_for('spotify.transfer') }}">
+          <button class="btn btn-quiet btn-small" type="submit">{{ icon("transfer") }}<span>Transferir</span></button>
+        </form>
+        <form method="post" action="{{ url_for('spotify.play') }}">
+          <button class="btn btn-quiet btn-small" type="submit">{{ icon("play") }}<span>Play</span></button>
+        </form>
+        <form method="post" action="{{ url_for('spotify.pause') }}">
+          <button class="btn btn-quiet btn-small" type="submit">{{ icon("pause") }}<span>Pause</span></button>
+        </form>
+      </div>
+    {% else %}
+      <p class="target-name">Elige dónde suenan las alarmas</p>
+      <p class="muted">Selecciona un dispositivo de la lista. En la Raspberry, Raspotify aparece como
+        «Groove».</p>
+    {% endif %}
+  </section>
 
+  {# Dispositivos disponibles. #}
+  <section class="devices" aria-labelledby="devices-title">
+    <h2 id="devices-title">Dispositivos</h2>
+    <p class="hint">Activo: <strong>{{ active.name if active else "ninguno" }}</strong></p>
     {% if devices %}
       <ul class="device-list">
         {% for device in devices %}
-          <li class="device">
+          {% set is_selected = device.id and device.id == selected_id %}
+          <li class="device {% if is_selected %}is-selected{% endif %}">
+            <span class="device-icon">{{ icon("speaker") }}</span>
             <div class="device-info">
               <span class="device-name">{{ device.name }}</span>
-              <span class="muted small">
+              <span class="device-meta">
                 {{ device.type }}
                 {% if device.is_active %}<span class="badge badge-on">activo</span>{% endif %}
-                {% if device.id and device.id == selected_id %}<span class="badge">seleccionado</span>{% endif %}
                 {% if device.is_restricted %}<span class="badge badge-off">no controlable</span>{% endif %}
               </span>
             </div>
-            {% if device.id and device.id != selected_id and not device.is_restricted %}
+            {% if is_selected %}
+              <span class="device-check">{{ icon("check") }}<span>seleccionado</span></span>
+            {% elif device.id and not device.is_restricted %}
               <form method="post" action="{{ url_for('spotify.select_device') }}">
                 <input type="hidden" name="device_id" value="{{ device.id }}">
                 <input type="hidden" name="device_name" value="{{ device.name }}">
-                <button class="btn" type="submit">Seleccionar</button>
+                <button class="btn btn-quiet btn-small" type="submit">Seleccionar</button>
               </form>
             {% endif %}
           </li>
         {% endfor %}
       </ul>
     {% else %}
-      <p class="muted">No hay dispositivos disponibles. Abre Spotify en el PC o el móvil y pulsa «Actualizar».</p>
-    {% endif %}
-  </section>
-
-  <section class="card">
-    <h2>Prueba</h2>
-    {% if selected_id %}
-      <p class="muted small">
-        Dispositivo seleccionado: <strong>{{ selected_name or selected_id }}</strong>
-        {% if not selected_available %}(no disponible ahora){% endif %}
-      </p>
-      {% if selected_name %}
-        <p class="muted small">Las alarmas usan «{{ selected_name }}» aunque cambie de ID (por
-          ejemplo, al reiniciar Raspotify): lo buscan por nombre y reintentan unos segundos
-          si todavía no aparece.</p>
-      {% endif %}
-      <div class="alarm-actions">
-        <form method="post" action="{{ url_for('spotify.transfer') }}">
-          <button class="btn" type="submit">Transferir</button>
-        </form>
-        <form method="post" action="{{ url_for('spotify.play') }}">
-          <button class="btn btn-on" type="submit">▶ Play</button>
-        </form>
-        <form method="post" action="{{ url_for('spotify.pause') }}">
-          <button class="btn" type="submit">⏸ Pause</button>
-        </form>
+      <div class="empty">
+        <p>No aparece ningún dispositivo.</p>
+        <p class="muted">Enciende Groove (Raspotify) o abre Spotify en el móvil o el PC y pulsa
+          «Actualizar».</p>
       </div>
-    {% else %}
-      <p class="muted">Selecciona un dispositivo de la lista.</p>
     {% endif %}
   </section>
 {% endif %}

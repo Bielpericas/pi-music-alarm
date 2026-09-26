@@ -3,12 +3,15 @@ import os
 import re
 from pathlib import Path
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import (
+    Flask, abort, flash, jsonify, redirect, render_template, request, send_from_directory, url_for,
+)
 from werkzeug.serving import is_running_from_reloader
 
 import db
 import scheduler
 import spotify_views
+import ui
 from audio_player import create_player
 from playback import AlarmPlaybackManager
 from spotify_client import create_spotify_client, parse_spotify_uri
@@ -161,6 +164,8 @@ def create_app(config=None, player=None, spotify=None):
     )
     app.jinja_env.filters["describe_source"] = describe_source
     app.jinja_env.filters["describe_volume"] = describe_volume
+    app.jinja_env.filters["fade_label"] = ui.fade_label
+    app.jinja_env.filters["selected_days"] = ui.selected_days
     app.register_blueprint(spotify_views.bp)
     # Estado de la alarma que suena (STOP / +10 MIN). Ver playback.py.
     playback = AlarmPlaybackManager(
@@ -179,6 +184,18 @@ def create_app(config=None, player=None, spotify=None):
         # Los snoozes usan el mismo APScheduler (jobs en memoria).
         playback.schedule_once = scheduler.date_job_scheduler(background)
 
+    @app.context_processor
+    def inject_playback():
+        """Estado de reproducción para todas las páginas (aviso de alarma
+        sonando y comprobación de conexión desde cualquier pantalla)."""
+        active, snoozes = playback.active, playback.pending_snoozes
+        return {
+            "playback_active": active,
+            "playback_key": playback_key(active, snoozes),
+            "day_letters": ui.DAY_LETTERS,
+            "day_full": ui.DAY_FULL,
+        }
+
     def render_form(data, errors=(), status=200, alarm_id=None):
         return render_template(
             "alarm_form.html", data=data, errors=errors, day_names=DAY_NAMES,
@@ -193,10 +210,36 @@ def create_app(config=None, player=None, spotify=None):
     @app.get("/")
     def index():
         active, snoozes = playback.active, playback.pending_snoozes
+        alarms = db.list_alarms()
+        now = ui.now()
+        upcoming, when = ui.next_alarm(alarms, now)
         return render_template(
-            "index.html", alarms=db.list_alarms(), active=active, snoozes=snoozes,
-            playback_key=playback_key(active, snoozes),
+            "index.html", alarms=alarms, active=active, snoozes=snoozes,
+            upcoming=upcoming,
+            upcoming_day=ui.describe_day(when, now) if when else None,
+            upcoming_countdown=ui.describe_countdown(when, now) if when else None,
+            sun_height=ui.sun_height(when, now) if when else 0,
         )
+
+    # --- PWA: manifest y service worker servidos desde la raíz ---
+
+    static_dir = Path(app.root_path) / "static"
+
+    @app.get("/manifest.webmanifest")
+    def manifest():
+        resp = send_from_directory(static_dir, "manifest.webmanifest",
+                                   mimetype="application/manifest+json")
+        resp.cache_control.no_cache = True
+        return resp
+
+    @app.get("/sw.js")
+    def service_worker():
+        # En la raíz para que su alcance sea toda la app; sin caché para que
+        # los cambios del service worker lleguen enseguida.
+        resp = send_from_directory(static_dir, "sw.js", mimetype="text/javascript")
+        resp.cache_control.no_cache = True
+        resp.headers["Service-Worker-Allowed"] = "/"
+        return resp
 
     @app.route("/alarms/new", methods=["GET", "POST"])
     def new_alarm():
