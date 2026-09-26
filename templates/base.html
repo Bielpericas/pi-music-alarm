@@ -9,11 +9,15 @@
 <body>
   <header class="topbar">
     <a href="{{ url_for('index') }}" class="brand">⏰ Despertador</a>
+    <nav>
+      <a href="{{ url_for('index') }}">Alarmas</a>
+      <a href="{{ url_for('spotify.index') }}">Spotify</a>
+    </nav>
   </header>
   <main class="container">
-    {% with messages = get_flashed_messages() %}
-      {% for message in messages %}
-        <p class="flash">{{ message }}</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <p class="flash {% if category == 'error' %}flash-error{% endif %}">{{ message }}</p>
       {% endfor %}
     {% endwith %}
     {% block content %}{% endblock %}

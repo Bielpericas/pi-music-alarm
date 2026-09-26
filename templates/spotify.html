@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Spotify · Despertador{% endblock %}
+{% block content %}
+<h1>Spotify</h1>
+
+<section class="card">
+  {% if not configured %}
+    <p><span class="badge badge-off">No configurado</span></p>
+    <p class="muted">Faltan <code>SPOTIFY_CLIENT_ID</code> y <code>SPOTIFY_CLIENT_SECRET</code> en
+      el fichero <code>.env</code>. Mira el README.</p>
+  {% elif connected %}
+    <p><span class="badge badge-on">Conectado</span></p>
+    <form method="post" action="{{ url_for('spotify.disconnect') }}"
+          data-confirm="¿Desvincular tu cuenta de Spotify?">
+      <button class="btn" type="submit">Desconectar</button>
+    </form>
+  {% else %}
+    <p><span class="badge badge-off">No conectado</span></p>
+    <a class="btn btn-primary" href="{{ url_for('spotify.connect') }}">Conectar Spotify</a>
+    <p class="muted small">Redirect URI: <code>{{ redirect_uri }}</code></p>
+  {% endif %}
+</section>
+
+{% if error %}
+  <p class="flash flash-error">{{ error }}</p>
+{% endif %}
+
+{% if connected %}
+  <section class="card">
+    <div class="heading">
+      <h2>Dispositivos</h2>
+      <a class="btn" href="{{ url_for('spotify.index') }}">Actualizar</a>
+    </div>
+    <p class="muted small">
+      Activo: <strong>{{ active.name if active else "ninguno" }}</strong>
+    </p>
+
+    {% if devices %}
+      <ul class="device-list">
+        {% for device in devices %}
+          <li class="device">
+            <div class="device-info">
+              <span class="device-name">{{ device.name }}</span>
+              <span class="muted small">
+                {{ device.type }}
+                {% if device.is_active %}<span class="badge badge-on">activo</span>{% endif %}
+                {% if device.id and device.id == selected_id %}<span class="badge">seleccionado</span>{% endif %}
+                {% if device.is_restricted %}<span class="badge badge-off">no controlable</span>{% endif %}
+              </span>
+            </div>
+            {% if device.id and device.id != selected_id and not device.is_restricted %}
+              <form method="post" action="{{ url_for('spotify.select_device') }}">
+                <input type="hidden" name="device_id" value="{{ device.id }}">
+                <input type="hidden" name="device_name" value="{{ device.name }}">
+                <button class="btn" type="submit">Seleccionar</button>
+              </form>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">No hay dispositivos disponibles. Abre Spotify en el PC o el móvil y pulsa «Actualizar».</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Prueba</h2>
+    {% if selected_id %}
+      <p class="muted small">
+        Dispositivo seleccionado: <strong>{{ selected_name or selected_id }}</strong>
+        {% if not selected_available %}(no disponible ahora){% endif %}
+      </p>
+      <div class="alarm-actions">
+        <form method="post" action="{{ url_for('spotify.transfer') }}">
+          <button class="btn" type="submit">Transferir</button>
+        </form>
+        <form method="post" action="{{ url_for('spotify.play') }}">
+          <button class="btn btn-on" type="submit">▶ Play</button>
+        </form>
+        <form method="post" action="{{ url_for('spotify.pause') }}">
+          <button class="btn" type="submit">⏸ Pause</button>
+        </form>
+      </div>
+    {% else %}
+      <p class="muted">Selecciona un dispositivo de la lista.</p>
+    {% endif %}
+  </section>
+{% endif %}
+{% endblock %}

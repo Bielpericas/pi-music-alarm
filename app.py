@@ -1,4 +1,4 @@
-"""App Flask del despertador: CRUD de alarmas + scheduler + audio local."""
+"""App Flask del despertador: CRUD de alarmas + scheduler + audio local + Spotify."""
 import os
 import re
 from pathlib import Path
@@ -8,7 +8,9 @@ from werkzeug.serving import is_running_from_reloader
 
 import db
 import scheduler
+import spotify_views
 from audio_player import create_player
+from spotify_client import create_spotify_client
 
 DEFAULT_SOUND = Path(__file__).parent / "sounds" / "alarm.wav"
 DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
@@ -55,8 +57,8 @@ def format_days(days_csv):
     return ", ".join(DAY_NAMES[d] for d in days)
 
 
-def create_app(config=None, player=None):
-    """Crea la app. `player` permite inyectar otro reproductor (p. ej. un mock en tests)."""
+def create_app(config=None, player=None, spotify=None):
+    """Crea la app. `player` y `spotify` permiten inyectar dobles (mocks) en tests."""
     app = Flask(__name__, instance_relative_config=True)
     app.config.update(
         SECRET_KEY=os.environ.get("SECRET_KEY", "dev"),
@@ -65,6 +67,11 @@ def create_app(config=None, player=None):
         SCHEDULER_ENABLED=True,
         AUDIO_BACKEND=os.environ.get("AUDIO_BACKEND", "local"),
         SOUND_PATH=os.environ.get("ALARM_SOUND", str(DEFAULT_SOUND)),
+        SPOTIFY_CLIENT_ID=os.environ.get("SPOTIFY_CLIENT_ID", ""),
+        SPOTIFY_CLIENT_SECRET=os.environ.get("SPOTIFY_CLIENT_SECRET", ""),
+        SPOTIFY_REDIRECT_URI=os.environ.get(
+            "SPOTIFY_REDIRECT_URI", "http://127.0.0.1:5000/spotify/callback"
+        ),
     )
     if config:
         app.config.update(config)
@@ -73,6 +80,8 @@ def create_app(config=None, player=None):
     scheduler.setup_logging(app.config["ALARM_LOG"])
     app.jinja_env.filters["format_days"] = format_days
     app.extensions["audio_player"] = player or create_player(app.config)
+    app.extensions["spotify"] = spotify or create_spotify_client(app.config)
+    app.register_blueprint(spotify_views.bp)
 
     # En modo debug Flask arranca dos procesos (vigilante + servidor); el
     # scheduler solo debe correr en el que sirve. Sin debug hay un solo proceso.
@@ -133,6 +142,10 @@ def create_app(config=None, player=None):
 
 
 if __name__ == "__main__":
+    # Carga .env (SPOTIFY_CLIENT_ID, etc.). `flask run` lo hace solo.
+    from dotenv import load_dotenv
+
+    load_dotenv()
     # DEBUG en la config desde el principio para que create_app sepa que
     # habrá recargador y no arranque el scheduler dos veces.
     create_app({"DEBUG": True}).run(debug=True)

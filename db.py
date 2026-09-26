@@ -86,6 +86,21 @@ def delete_alarm(alarm_id):
     return cur.rowcount > 0
 
 
+def get_setting(key, default=None):
+    row = get_db().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    db = get_db()
+    db.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    db.commit()
+
+
 # --- Consultas del scheduler (usan su propia conexión, fuera de peticiones HTTP) ---
 
 def enabled_alarms_at(conn, hhmm):
