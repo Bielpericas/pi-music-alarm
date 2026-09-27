@@ -6,7 +6,19 @@ Estado actual: gestión de alarmas (crear, listar, activar/desactivar, borrar, p
 scheduler que las dispara a su hora. Al dispararse, la alarma reproduce un WAV local y escribe
 `ALARMA ACTIVADA: <nombre>` en la consola y en `instance\alarms.log`.
 Cada alarma puede sonar con el WAV local o con Spotify (canción, álbum o playlist); si Spotify falla,
-suena el WAV local como respaldo.
+suena el respaldo (música local y, en último caso, el WAV de emergencia).
+
+## Estado actual del acceso (Groove en la Raspberry)
+
+- **Groove normal**: `http://192.168.0.21:5000` (IP fija por reserva DHCP).
+- **Vincular Spotify**: `ssh -L 5000:127.0.0.1:5000 Groove`, luego abrir
+  `http://127.0.0.1:5000/spotify/` en ese mismo equipo y pulsar **Conectar Spotify**. Después se
+  puede cerrar el túnel (Ctrl+C); los tokens quedan en Groove.
+- **HTTPS / PWA**: **pendiente**. Se empezó a configurar Caddy, pero no está terminado ni validado; no
+  hay URL HTTPS oficial.
+
+Detalles, el porqué del túnel y la solución definitiva prevista:
+[docs/https-spotify-oauth.md](docs/https-spotify-oauth.md).
 
 ## Requisitos
 
@@ -258,13 +270,21 @@ En el PC (PowerShell), con la app corriendo en la Pi:
 ssh -L 5000:127.0.0.1:5000 <usuario>@<IP-de-la-Pi>
 ```
 
+En la instalación actual la Pi es `192.168.0.21` y el equipo del desarrollador tiene el alias SSH
+`Groove`, así que basta con `ssh -L 5000:127.0.0.1:5000 Groove`.
+
 Deja esa ventana abierta y, en el navegador del PC, abre **http://127.0.0.1:5000/spotify/**, pulsa
 **Conectar Spotify** y acepta. Si en el PC tienes la app de desarrollo usando el puerto 5000, párala
 antes. Luego ya puedes cerrar el túnel y usar la Pi con su IP normal.
 
-Recuerda que una alarma Spotify suena en un **dispositivo Spotify Connect** (móvil, altavoz, PC con
-Spotify abierto). La Pi todavía no es uno de ellos: eso llegará con librespot. Si no hay
-dispositivo disponible, suena el WAV por la tarjeta de la Pi.
+No intentes vincular desde el móvil abriendo Groove por su IP: al volver de Spotify el navegador
+iría a `127.0.0.1` del propio móvil y el callback fallaría. Explicación completa y estado de HTTPS
+en [docs/https-spotify-oauth.md](docs/https-spotify-oauth.md).
+
+Recuerda que una alarma Spotify suena en un **dispositivo Spotify Connect**. Con **Raspotify**
+(librespot) instalado, la propia Pi aparece como dispositivo «Groove»: selecciónalo en la página
+Spotify (ver [Dispositivo de las alarmas Spotify](#dispositivo-de-las-alarmas-spotify-groove)). Si no
+hay dispositivo disponible, suena el respaldo: música local y, si no, el WAV de emergencia.
 
 ### 10. Bluetooth (BlueALSA) y alarmas
 
@@ -591,13 +611,14 @@ Si algo falla, la página muestra el motivo: 403 = sin Premium o usuario fuera d
 Al crear o editar una alarma, en **Sonido** elige **Sonido local** o **Spotify**. Con Spotify, en
 **Contenido de Spotify** eliges qué suena. Se guarda siempre como URI.
 
-Hay dos formas igual de válidas, y las dos acaban en el mismo URI:
+Hay dos formas, y las dos acaban en el mismo URI:
 
-1. **Pegar un enlace** (siempre visible). En Spotify: Compartir → Copiar enlace, y pegarlo en
-   *Pega un enlace de Spotify (playlist, álbum o canción)*. Funciona sin Spotify vinculado, sin
-   buscador y sin JavaScript: es el método de siempre.
+1. **Pegar un enlace** (siempre visible): **el método principal y fiable**. En Spotify: Compartir →
+   Copiar enlace, y pegarlo en *Pega un enlace de Spotify (playlist, álbum o canción)*. Funciona sin
+   Spotify vinculado, sin buscador y sin JavaScript.
 2. **Buscar en Spotify** (debajo, tras un separador «o»). Una comodidad que depende de que la API
-   de Spotify permita la búsqueda; nunca hace falta para crear una alarma.
+   de Spotify permita la búsqueda; nunca hace falta para crear una alarma. Ahora mismo puede estar
+   limitado o bloqueado por la API de Spotify y está **aparcado**: si no funciona, pega el enlace.
 
 #### Enlace manual
 
@@ -993,7 +1014,8 @@ La interfaz está pensada primero para el móvil: oscura, con navegación inferi
   conexión con Groove"); no hay modo offline de mentira.
 - Los navegadores solo activan el *service worker* en HTTPS o en `127.0.0.1`/`localhost`. Accediendo
   por `http://<IP-de-la-Pi>:5000` la app funciona igual y se puede añadir a la pantalla de inicio, pero
-  sin *service worker* (Android Chrome puede ofrecerlo solo como acceso directo).
+  sin *service worker* (Android Chrome puede ofrecerlo solo como acceso directo). El HTTPS (Caddy)
+  que lo resolvería está **pendiente**: ver [docs/https-spotify-oauth.md](docs/https-spotify-oauth.md).
 - Los iconos se generan con `python tools/make_icons.py` (sin dependencias).
 
 ## Estructura
@@ -1038,6 +1060,7 @@ alarmas antiguas), `volume_start`, `volume_end`, `fade_minutes` `max_duration_mi
 
 ## Próximos pasos
 
-- Volumen progresivo y botón para parar o posponer la alarma.
-- librespot para que la propia Pi sea un dispositivo Spotify Connect.
-- Protección CSRF y un `SECRET_KEY` real (variable de entorno `SECRET_KEY`) si la app se expone fuera de la red local.
+- HTTPS (Caddy) con URL estable, redirect URI de Spotify por HTTPS y PWA completa con *service
+  worker*: iniciado pero **pendiente** (ver [docs/https-spotify-oauth.md](docs/https-spotify-oauth.md)).
+- Protección CSRF si la app se expone fuera de la red local (y asegurarse de que `SECRET_KEY` está
+  definida en `.env`: sin ella se usa `dev`).
