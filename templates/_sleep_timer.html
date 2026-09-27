@@ -1,0 +1,67 @@
+{#
+  Tarjeta del temporizador de sueño (una sola para toda la app).
+
+  - `state`: sleep_timer_state (SleepTimerManager.status(), en el context processor).
+  - `targets`: fuentes que se pueden programar desde esta página, todas de la
+    misma fuente: [{"source": "spotify", "label": ...}] o
+    [{"source": "bluetooth", "mac": ..., "label": ...}, ...].
+    Con `none` (página principal) la tarjeta solo se ve si hay un temporizador activo.
+  - `return_to`: página a la que vuelven los formularios (lista cerrada en el servidor).
+  - `hint`: texto si no hay nada que programar ahora.
+
+  app.js actualiza la cuenta atrás y el estado sin recargar (el servidor manda).
+#}
+{% from "_icons.html" import icon %}
+{% macro sleep_timer_card(state, targets=none, return_to="index", hint=none) -%}
+{% set active = state.active %}
+{% set left = state.remaining if active else 0 %}
+<section class="card sleep-timer {% if active %}is-active{% endif %}" data-sleep-timer
+         data-status-url="{{ url_for('sleep_timer.status') }}"
+         data-active="{{ 'true' if active else 'false' }}" data-timer-id="{{ state.id if active else '' }}"
+         data-remaining="{{ left }}" {% if targets is none %}data-only-active{% if not active %} hidden{% endif %}{% endif %}
+         aria-labelledby="sleep-title">
+  <h2 id="sleep-title" class="sleep-title">{{ icon("moon") }}<span>Temporizador de sueño</span></h2>
+
+  <div class="sleep-active" data-sleep-active {% if not active %}hidden{% endif %} aria-live="polite">
+    <p class="sleep-countdown">Apagar en <span data-sleep-countdown>{{ "%02d:%02d" | format(left // 60, left % 60) }}</span></p>
+    <p class="sleep-source" data-sleep-label>{{ state.label if active else "" }}</p>
+    <form method="post" action="{{ url_for('sleep_timer.cancel') }}">
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <button class="btn btn-quiet btn-small" type="submit">Cancelar</button>
+    </form>
+  </div>
+
+  {% if targets is not none %}
+    <div class="sleep-idle" data-sleep-idle {% if active %}hidden{% endif %}>
+      {% if targets %}
+        <form method="post" action="{{ url_for('sleep_timer.start') }}" class="sleep-form">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <input type="hidden" name="source" value="{{ targets[0].source }}">
+          {% if targets | length == 1 %}
+            {% if targets[0].mac %}<input type="hidden" name="mac" value="{{ targets[0].mac }}">{% endif %}
+            <p class="sleep-source">{{ targets[0].label }}</p>
+          {% else %}
+            <fieldset class="sleep-targets">
+              <legend class="hint">¿Qué quieres apagar?</legend>
+              {% for target in targets %}
+                <label class="sleep-target">
+                  <input type="radio" name="mac" value="{{ target.mac }}" {% if loop.first %}checked{% endif %}>
+                  <span>{{ target.label }}</span>
+                </label>
+              {% endfor %}
+            </fieldset>
+          {% endif %}
+          <div class="sleep-choices" role="group" aria-label="Apagar dentro de">
+            {% for minutes in state.allowed_minutes %}
+              <button class="btn btn-quiet btn-small" type="submit" name="minutes" value="{{ minutes }}">{{ minutes }} min</button>
+            {% endfor %}
+          </div>
+        </form>
+      {% elif hint %}
+        <p class="hint">{{ hint }}</p>
+      {% endif %}
+      <p class="hint" data-sleep-last {% if not state.last %}hidden{% endif %}>{{ state.last.message if state.last else "" }}</p>
+    </div>
+  {% endif %}
+</section>
+{%- endmacro %}

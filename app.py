@@ -14,6 +14,7 @@ import db
 import diagnostics_views
 import music_views
 import scheduler
+import sleep_timer_views
 import spotify_views
 import ui
 from audio_player import create_music_player, create_player
@@ -23,6 +24,7 @@ from health import DEFAULT_BLUEALSA_SERVICE, DEFAULT_RASPOTIFY_SERVICE, HealthCh
 from music_library import LocalMusic, MusicLibrary
 from playback import AlarmPlaybackManager
 from preflight import DEFAULT_MINUTES as DEFAULT_PREFLIGHT_MINUTES, PreflightScheduler
+from sleep_timer import SleepTimerManager
 from spotify_client import (
     MAX_META_NAME, MAX_META_SUBTITLE, clean_text, create_spotify_client, parse_spotify_uri,
 )
@@ -277,12 +279,19 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     app.register_blueprint(music_views.bp)
     app.register_blueprint(bluetooth_views.bp)
     app.register_blueprint(diagnostics_views.bp)
+    app.register_blueprint(sleep_timer_views.bp)
     # Estado de la alarma que suena (STOP / +10 MIN). Ver playback.py.
     playback = AlarmPlaybackManager(
         app.extensions["audio_player"], app.extensions["spotify_alarm"],
         bluetooth=app.extensions["bluetooth"], music=app.extensions["music"],
     )
     app.extensions["playback"] = playback
+
+    # Temporizador de sueño (solo reproducción manual, en memoria). Toda alarma
+    # lo anula al empezar, desde el único punto por el que empiezan: start().
+    sleep_timer = SleepTimerManager(app.extensions["spotify"], manager, playback=playback)
+    playback.on_alarm_start = sleep_timer.invalidate_for_alarm
+    app.extensions["sleep_timer"] = sleep_timer
 
     # Health checks (página Diagnóstico y pre-flight). Solo observan. Ver health.py.
     health = HealthChecker(
@@ -306,6 +315,9 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         background = scheduler.start_scheduler(app, playback)
         # Los snoozes usan el mismo APScheduler (jobs en memoria).
         playback.schedule_once = scheduler.date_job_scheduler(background)
+        # Sin límite de retraso: si el job llega tarde, igualmente para la música.
+        sleep_timer.schedule_once = scheduler.date_job_scheduler(background,
+                                                                 misfire_grace_time=None)
         app.extensions["scheduler"] = health.scheduler = background
         # Pre-flight: jobs preflight:<id>, independientes del job de las alarmas.
         preflight.start(background)
@@ -318,6 +330,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         return {
             "playback_active": active,
             "playback_key": playback_key(active, snoozes),
+            "sleep_timer_state": sleep_timer.status(),
             "day_letters": ui.DAY_LETTERS,
             "day_full": ui.DAY_FULL,
         }

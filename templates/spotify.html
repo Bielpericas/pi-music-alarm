@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
+{% from "_sleep_timer.html" import sleep_timer_card %}
 {% block title %}Spotify · Groove{% endblock %}
 {% block content %}
 <div class="section-head">
@@ -76,6 +77,12 @@
         «Groove».</p>
     {% endif %}
   </section>
+
+  {# Temporizador de sueño: pausa lo que suena ahora en el dispositivo activo. #}
+  {{ sleep_timer_card(sleep_timer_state,
+                      [{"source": "spotify", "label": "Spotify · " ~ active.name}] if active else [],
+                      return_to="spotify",
+                      hint="Pon música en Spotify para programar el apagado.") }}
 
   {# Dispositivos disponibles. #}
   <section class="devices" aria-labelledby="devices-title">

@@ -514,6 +514,77 @@ document.addEventListener("submit", function (event) {
   setInterval(poll, 2000);
 })();
 
+// Temporizador de sueño: cuenta atrás local a partir de los segundos que
+// quedan según el servidor (no del reloj del móvil) y consulta del estado cada
+// 15 s, y al llegar a cero. Si termina (vencido, cancelado o anulado por una
+// alarma) o empieza uno desde otro dispositivo, la tarjeta cambia sin recargar.
+(function () {
+  var cards = document.querySelectorAll("[data-sleep-timer]");
+  if (!cards.length || !window.fetch) return;
+  var url = cards[0].getAttribute("data-status-url");
+  var active = cards[0].getAttribute("data-active") === "true";
+  var timerId = cards[0].getAttribute("data-timer-id");
+  var deadline = Date.now() + parseInt(cards[0].getAttribute("data-remaining"), 10) * 1000;
+  var zeroPolled = false;
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+  function each(fn) { for (var i = 0; i < cards.length; i++) fn(cards[i]); }
+
+  function paint() {
+    if (!active) return;
+    var left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+    each(function (card) {
+      var label = card.querySelector("[data-sleep-countdown]");
+      if (label) label.textContent = pad(Math.floor(left / 60)) + ":" + pad(left % 60);
+    });
+    if (left === 0 && !zeroPolled) {
+      zeroPolled = true;
+      setTimeout(poll, 1500);  // que el servidor confirme que ha terminado
+    }
+  }
+
+  function apply(state) {
+    active = !!state.active;
+    timerId = active ? String(state.id) : "";
+    if (active) {
+      deadline = Date.now() + state.remaining * 1000;  // el servidor manda
+      zeroPolled = false;
+    }
+    each(function (card) {
+      card.classList.toggle("is-active", active);
+      if (card.hasAttribute("data-only-active")) card.hidden = !active;
+      var on = card.querySelector("[data-sleep-active]");
+      var off = card.querySelector("[data-sleep-idle]");
+      var label = card.querySelector("[data-sleep-label]");
+      var last = card.querySelector("[data-sleep-last]");
+      if (on) on.hidden = !active;
+      if (off) off.hidden = active;
+      if (label) label.textContent = active ? state.label : "";
+      if (last) {
+        last.textContent = state.last ? state.last.message : "";
+        last.hidden = active || !state.last;
+      }
+    });
+    paint();
+  }
+
+  function poll() {
+    if (document.hidden) return;
+    fetch(url, { cache: "no-store", credentials: "same-origin" })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (state) { if (state) apply(state); })
+      .catch(function () {});
+  }
+
+  paint();
+  setInterval(paint, 1000);
+  setInterval(poll, 15000);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) poll();
+  });
+})();
+
 // Estado de Groove cada 10 s (sin caché): si empieza a sonar una alarma o
 // cambia un snooze, se muestra; si Groove no responde, se avisa. No hay modo
 // offline: sin conexión con la Raspberry no se puede hacer nada.

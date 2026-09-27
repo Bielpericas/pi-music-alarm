@@ -37,6 +37,9 @@ Reglas:
   empieza un contador completo. Cada start() recibe un token nuevo y el job
   solo actúa si su token es el de la alarma que suena: un job antiguo nunca
   para una alarma posterior. Sin límite (0) no se programa nada.
+- Temporizador de sueño (sleep_timer.py): cada start() sube `generation` y
+  llama a `on_alarm_start` antes de sonar nada, para anularlo. Es el único
+  punto: scheduler, snooze y Probar pasan todos por start().
 """
 import logging
 import threading
@@ -154,7 +157,7 @@ class StopResult(NamedTuple):
 class AlarmPlaybackManager:
     def __init__(self, player, spotify=None, schedule_once=None,
                  clock=datetime.now, snooze_minutes=SNOOZE_MINUTES, fader=None,
-                 bluetooth=None, music=None):
+                 bluetooth=None, music=None, on_alarm_start=None):
         self.player = player                  # AudioPlayer local (WAV de emergencia)
         self.music = music                    # LocalMusic (biblioteca + ffmpeg) o None
         self.spotify = spotify                # SpotifyAlarmPlayer o None
@@ -171,12 +174,20 @@ class AlarmPlaybackManager:
         self._pending_view = ()
         self._token = 0                       # sube en cada start(): identifica la reproducción
         self._auto_stop = None                # cancel() del auto-stop pendiente
+        # on_alarm_start(nombre): se llama en cada start() antes de sonar nada
+        # (el temporizador de sueño se anula ahí; ver sleep_timer.py).
+        self.on_alarm_start = on_alarm_start
 
     # --- Estado (lectura sin lock: son referencias a objetos inmutables) ---
 
     @property
     def active(self):
         return self._active
+
+    @property
+    def generation(self):
+        """Sube cada vez que empieza una alarma (start). Solo lectura."""
+        return self._token
 
     @property
     def pending_snoozes(self):
@@ -190,10 +201,13 @@ class AlarmPlaybackManager:
         alarm = {key: alarm[key] for key in ALARM_FIELDS + OPTIONAL_FIELDS
                  if key in ALARM_FIELDS or key in keys}
         with self._lock:
-            self._cancel_fade()  # el fade de la alarma anterior, si lo hubiera
-            self._cancel_auto_stop()  # el de la anterior: la nueva tiene el suyo
+            # La generación sube antes de avisar: un temporizador de sueño que se
+            # esté creando a la vez ve el cambio y no se programa.
             self._token += 1
             token = self._token
+            self._notify_alarm_start(alarm["name"])
+            self._cancel_fade()  # el fade de la alarma anterior, si lo hubiera
+            self._cancel_auto_stop()  # el de la anterior: la nueva tiene el suyo
             suffix = " (prueba manual)" if manual else " (pospuesta)" if snoozes else ""
             logger.info("ALARMA ACTIVADA: %s%s", alarm["name"], suffix)
 
@@ -295,6 +309,15 @@ class AlarmPlaybackManager:
                 self.stop()
 
     # --- Internos ---
+
+    def _notify_alarm_start(self, name):
+        """Anula el temporizador de sueño. Un fallo nunca impide que suene la alarma."""
+        if self.on_alarm_start is None:
+            return
+        try:
+            self.on_alarm_start(name)
+        except Exception:
+            logger.exception("Error al avisar del inicio de la alarma; suena igualmente")
 
     def _interrupt_start(self):
         """Sin coger el lock: si un start está buscando el dispositivo de

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
+{% from "_sleep_timer.html" import sleep_timer_card %}
 {% block title %}Bluetooth · Groove{% endblock %}
 {% block content %}
 {% set pairing = session and session.active %}
@@ -163,5 +164,9 @@
       </div>
     {% endif %}
   </section>
+
+  {# 4. Temporizador de sueño: desconecta el dispositivo elegido (sin olvidarlo). #}
+  {{ sleep_timer_card(sleep_timer_state, sleep_targets, return_to="bluetooth",
+                      hint="Conecta un dispositivo para programar el apagado.") }}
 {% endif %}
 {% endblock %}

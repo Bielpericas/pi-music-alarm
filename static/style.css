@@ -722,6 +722,26 @@ input[type="range"] { width: 100%; height: 44px; margin: 0; accent-color: var(--
 .bt-forget { color: var(--danger); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* --- Temporizador de sueño --- */
+
+.sleep-timer.is-active { border-color: var(--sun); }
+.sleep-timer[hidden], .sleep-timer [hidden] { display: none; }
+.sleep-timer form { margin: 0; }
+.sleep-title { display: flex; align-items: center; gap: 10px; font-size: 1.05rem; font-weight: 700; }
+.sleep-title .icon { color: var(--sun); }
+.sleep-active, .sleep-idle, .sleep-form { display: flex; flex-direction: column; gap: 10px; }
+.sleep-active .btn { align-self: flex-start; }
+.sleep-countdown { font-size: 1.1rem; }
+.sleep-countdown span {
+  font-family: var(--font-clock); font-size: 2.2rem; font-weight: 300;
+  font-variant-numeric: tabular-nums; color: var(--sun);
+}
+.sleep-source { color: var(--muted); overflow-wrap: anywhere; }
+.sleep-choices { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.sleep-choices .btn { padding-inline: 6px; }
+.sleep-targets { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sleep-target { display: flex; align-items: center; gap: 10px; min-height: 44px; overflow-wrap: anywhere; }
+
 /* --- Movimiento reducido --- */
 
 @media (prefers-reduced-motion: reduce) {

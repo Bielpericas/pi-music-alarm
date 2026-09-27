@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
+{% from "_sleep_timer.html" import sleep_timer_card %}
 {% block title %}Alarmas · Groove{% endblock %}
 {% block content %}
 
@@ -38,6 +39,9 @@
     </form>
   </section>
 {% endfor %}
+
+{# Temporizador de sueño: solo se ve si hay uno activo (se programa en Spotify / Bluetooth). #}
+{{ sleep_timer_card(sleep_timer_state) }}
 
 {# 3. Próxima alarma, con el sol subiendo por el horizonte según se acerca. #}
 {% if upcoming and not active %}

@@ -54,6 +54,9 @@ def index():
         "bluetooth.html", available=bt.available, adapter=adapter, devices=devices,
         session=bt.session_view(), recent=bt.recent_view(), audio=_audio_state(), error=error,
         playback_paused=bool(getattr(current_app.extensions.get("bluetooth"), "paused", False)),
+        # Temporizador de sueño: solo los dispositivos conectados ahora.
+        sleep_targets=[{"source": "bluetooth", "mac": d.mac, "label": f"Bluetooth · {d.name}"}
+                       for d in devices if d.connected],
     )
 
 

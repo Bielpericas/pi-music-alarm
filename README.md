@@ -838,6 +838,71 @@ Código: `playback.py` (`AlarmPlaybackManager`) guarda el estado y hace start / 
 (los hilos de waitress y de APScheduler no se pisan). El scheduler solo llama a `manager.start(alarm)`;
 las vistas solo llaman a `stop()` / `snooze()`. El snooze es un job de APScheduler en memoria.
 
+## Temporizador de sueño
+
+Para dormirte con música: al cabo de **15, 30, 45 o 60 minutos** Groove para la reproducción que tú
+has puesto a mano.
+
+**No es el auto-stop.** El auto-stop (Duración máxima) es de cada alarma y para esa alarma cuando
+lleva sonando demasiado. El temporizador de sueño es para la música que pones tú (Spotify o el móvil
+por Bluetooth) y **nunca para una alarma**.
+
+Dónde está:
+- **Spotify**: tarjeta «Temporizador de sueño» cuando hay algo sonando (un dispositivo activo).
+- **Bluetooth**: la misma tarjeta con los dispositivos conectados ahora (si hay varios, eliges cuál).
+- **Alarmas** (página principal): solo aparece si hay un temporizador activo, con la cuenta atrás
+  («Apagar en 29:42»), la fuente («Spotify · Groove» o «Bluetooth · Redmi Note 11 Pro 5G») y
+  **Cancelar**.
+
+La cuenta atrás se actualiza sola, sin recargar la página: el servidor dice cuántos segundos quedan y
+el navegador los descuenta (no depende de la hora del móvil); cada 15 s se vuelve a preguntar.
+
+Qué hace al vencer:
+- **Spotify**: pausa el dispositivo que estaba activo al programarlo (API de Spotify, `PUT
+  /me/player/pause`). No cambia de dispositivo, no transfiere, no toca el volumen ni desvincula la
+  cuenta. Si ese dispositivo ya no es el activo (pasaste la música al móvil, por ejemplo), no hace
+  nada.
+- **Bluetooth**: **desconecta** el dispositivo elegido, como el botón Desconectar. **No lo olvida**:
+  sigue `Paired: yes`, `Bonded: yes` y `Trusted: yes`, y lo puedes volver a conectar como siempre. No
+  toca el adaptador ni la visibilidad (discoverable/pairable). Si ya estaba desconectado o ya no
+  existe, no hace nada.
+- Cada temporizador va ligado a **una fuente concreta** desde que se crea (ID del dispositivo de
+  Spotify o MAC Bluetooth). Al vencer no adivina qué suena: un temporizador de Spotify nunca toca
+  Bluetooth ni al revés.
+- Si algo falla (Spotify sin red, error de BlueZ...) se registra en el log y el temporizador termina,
+  sin reintentos.
+- Solo hay **uno** a la vez: programar otro sustituye al anterior.
+
+**Nunca detiene una alarma:**
+- En cuanto empieza **cualquier** alarma (a su hora, al volver de un snooze o con Probar) el
+  temporizador se anula y queda registrado. Cuando llegue su hora no hace absolutamente nada.
+  Ejemplo: temporizador a las 23:30 de 60 min, alarma a las 00:15 → a las 00:30 la alarma sigue
+  sonando.
+- Mientras suena una alarma no se puede programar.
+- Condiciones de carrera: la comprobación y la acción del vencimiento se hacen con el mismo lock que
+  usa la anulación. Si coinciden, o la alarma lo anula primero (y no se hace nada) o la pausa termina
+  antes de que la alarma empiece a sonar (la alarma puede tardar como mucho unos segundos más). Además,
+  cada temporizador recuerda cuántas alarmas habían empezado al crearlo: si ha empezado alguna desde
+  entonces, o hay una sonando, no hace nada.
+
+**No sobrevive a un reinicio**: vive solo en memoria (un job de APScheduler). Si Groove o la Raspberry
+se reinician, el temporizador desaparece y no se restaura; vuelve a programarlo si hace falta.
+
+En el log (`instance/alarms.log`):
+`Sleep timer iniciado: Spotify, 30 min (dispositivo «Groove», hasta las 00:00)`,
+`Sleep timer iniciado: Bluetooth (Redmi Note 11 Pro 5G, AA:BB:…), 45 min (hasta las 00:15)`,
+`Sleep timer cancelado (…)`, `Sleep timer invalidado por alarma «Despertador»: …`,
+`Sleep timer finalizado: Spotify pausado («Groove»)` y
+`Sleep timer finalizado: dispositivo Bluetooth desconectado (…); sigue emparejado y de confianza`.
+
+Rutas: `GET /sleep-timer/status` (JSON), `POST /sleep-timer/start` (`source` = `spotify` o
+`bluetooth`, `minutes` = 15/30/45/60, `mac` si es Bluetooth) y `POST /sleep-timer/cancel`. Se valida
+la duración, la fuente y la MAC; las acciones solo por POST.
+
+Código: `sleep_timer.py` (`SleepTimerManager`: crear, cancelar, estado, vencer e invalidar),
+`sleep_timer_views.py` (rutas), `templates/_sleep_timer.html` (tarjeta común). La anulación está
+enganchada en `AlarmPlaybackManager.start()`, el único sitio por el que empieza una alarma.
+
 ## Diagnóstico y pre-flight
 
 ### Página Diagnóstico
@@ -944,6 +1009,8 @@ spotify_client.py   # todo el HTTP con Spotify: OAuth, refresh, errores, búsque
 spotify_views.py    # rutas /spotify/... (incluye /spotify/search y /spotify/lookup en JSON)
 spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> reproducir
 playback.py         # alarma sonando: estado, STOP y snooze
+sleep_timer.py      # temporizador de sueño (Spotify / Bluetooth manual, en memoria)
+sleep_timer_views.py # rutas /sleep-timer/... (estado JSON, start y cancel por POST)
 bluetooth_audio.py  # para / arranca bluealsa-aplay alrededor de las alarmas (systemctl)
 bluetooth_manager.py # BlueZ (bluetoothctl): estado, dispositivos, ventana de emparejamiento
 bluetooth_views.py  # rutas /bluetooth/... (página, estado JSON y acciones POST)

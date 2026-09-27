@@ -109,15 +109,17 @@ def start_scheduler(app, manager):
     return scheduler
 
 
-def date_job_scheduler(scheduler):
+def date_job_scheduler(scheduler, misfire_grace_time=60):
     """Devuelve schedule_once(run_at, callback) -> cancel() usando APScheduler.
 
-    Para los snoozes. El jobstore por defecto es en memoria: si la app se
-    reinicia, los snoozes pendientes se pierden (a propósito).
+    Para los snoozes, el auto-stop y el temporizador de sueño. El jobstore por
+    defecto es en memoria: si la app se reinicia, los jobs pendientes se
+    pierden (a propósito). `misfire_grace_time=None`: el job se ejecuta
+    aunque llegue tarde.
     """
     def schedule_once(run_at, callback):
         job = scheduler.add_job(
-            callback, DateTrigger(run_date=run_at), misfire_grace_time=60
+            callback, DateTrigger(run_date=run_at), misfire_grace_time=misfire_grace_time
         )
         return job.remove
 
