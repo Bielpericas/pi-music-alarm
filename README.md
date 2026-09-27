@@ -107,11 +107,13 @@ sencillo es una tarjeta USB barata con un adaptador micro-USB OTG.
 ```bash
 sudo apt update
 sudo apt full-upgrade -y
-sudo apt install -y git python3 python3-venv python3-pip alsa-utils
+sudo apt install -y git python3 python3-venv python3-pip alsa-utils ffmpeg
 ```
 
 - `python3-venv`: crear el entorno virtual.
-- `alsa-utils`: incluye `aplay`, que reproduce el WAV.
+- `alsa-utils`: incluye `aplay`, que reproduce el WAV de emergencia.
+- `ffmpeg`: reproduce la música local (MP3, OGG, WAV). Si ya tenías Groove instalado:
+  `sudo apt install -y ffmpeg`.
 - No hace falta compilar nada: todas las dependencias tienen versión en Python puro o wheel para ARM.
 
 ### 2. Clonar el repositorio
@@ -360,6 +362,58 @@ Para quitar el permiso: `sudo rm /etc/polkit-1/rules.d/50-pi-music-alarm-bluetoo
 - El scheduler y el botón **Probar** solo llaman a `player.play()`: no saben nada de audio.
   `create_player()` elige la implementación según `AUDIO_BACKEND` (`local` o `none`).
 
+### Música local (biblioteca)
+
+Las alarmas locales, y las de Spotify cuando Spotify falla, suenan con música de la **biblioteca local**:
+la carpeta `instance/music/` de la Pi (se crea sola). Formatos: **MP3, OGG y WAV** (se ignora todo lo
+demás, subcarpetas y ficheros ocultos incluidos).
+
+**Añadir música**, de dos formas:
+
+- Desde la web: sección **Música** (navegación inferior) → elegir archivo → **Subir**. Desde ahí también
+  se ven (nombre, tipo, tamaño y qué alarmas la usan) y se **eliminan** (con confirmación).
+- Por SCP desde el PC:
+
+  ```bash
+  scp cancion.mp3 pericasbiel@Groove:~/pi-music-alarm/instance/music/
+  ```
+
+Lo subido o copiado aparece al momento en los formularios de alarma, sin reiniciar Groove.
+
+Subidas desde la web:
+
+- Máximo `LOCAL_MUSIC_MAX_UPLOAD_MB` por archivo (50 MB por defecto, en `.env`).
+- El nombre se sanea (sin rutas, sin `../`, solo letras, números, `-`, `_` y `.`; los acentos se
+  quitan: `canción.mp3` → `cancion.mp3`) y siempre se guarda dentro de `instance/music/`.
+- Se comprueba que el contenido corresponde a la extensión (cabecera MP3/OGG/WAV).
+- **Nunca se sobrescribe**: si ya existe un archivo con ese nombre, se avisa.
+
+En cada alarma, **Música local** (o **Música de respaldo** si es de Spotify) puede ser una pista concreta o
+**Aleatorio**, que elige una pista cada vez que la alarma empieza a sonar (también al volver de +10 MIN;
+puede repetirse). En la base de datos solo se guarda el nombre del fichero (`local_track`; vacío =
+aleatorio).
+
+**Orden de respaldo: Spotify → música local → WAV de emergencia.** El WAV de emergencia es el de siempre
+(`sounds/alarm.wav` o `ALARM_SOUND`, con `aplay`) y suena solo si la música local no puede sonar:
+
+- la biblioteca está vacía;
+- la pista elegida ya no existe (se borró; la alarma no se toca y en su formulario sale «no disponible»);
+- ffmpeg no está instalado, o termina con error al empezar (archivo corrupto, tarjeta ocupada...).
+
+Todo queda en el log (`Música local para «…»: sunrise.mp3 (al azar)`, `La pista «…» ya no está en la
+biblioteca`, `Sin música local para «…»: suena el WAV de emergencia`, `ffmpeg no está instalado`...).
+
+Reproducción: un proceso `ffmpeg` por alarma, sin shell, con la pista **en bucle** hasta STOP, +10 MIN o
+el auto-stop:
+
+```
+ffmpeg -hide_banner -nostdin -loglevel error -stream_loop -1 -i <pista> -f alsa <ALSA_DEVICE>
+```
+
+La salida es `ALSA_DEVICE` (o `plughw:CARD=Device,DEV=0` si está vacío). Para pararlo (STOP, +10 MIN,
+auto-stop, borrar o sustituir la alarma) se le envía SIGTERM y, si no termina en 2 s, SIGKILL: no quedan
+procesos huérfanos. En Windows (desarrollo) no se usa ffmpeg: suena el WAV de emergencia.
+
 ### Probar una alarma programada
 
 1. Arranca con `python app.py` y mira la hora actual del PC.
@@ -547,8 +601,8 @@ Reglas:
 - Si una alarma vuelve a sonar (o la borras) mientras estaba pospuesta, ese snooze se cancela.
 - **Los snoozes solo viven en memoria**: si la app o la Raspberry se reinician durante un snooze, se
   pierde (mejor eso que sonar a una hora incorrecta). Las alarmas normales siguen guardadas en SQLite.
-- El WAV local suena una vez (no se repite en bucle); el recuadro sigue visible hasta STOP, +10 MIN o
-  el auto-stop.
+- La música local suena en bucle; el WAV de emergencia, una vez. El recuadro sigue visible hasta STOP,
+  +10 MIN o el auto-stop.
 
 ### Duración máxima (auto-stop)
 
@@ -603,7 +657,7 @@ las vistas solo llaman a `stop()` / `snooze()`. El snooze es un job de APSchedul
 ## Interfaz y app en el móvil (PWA)
 
 La interfaz está pensada primero para el móvil: oscura, con navegación inferior (**Alarmas** /
-**Spotify**) y, en pantallas anchas, navegación arriba y un ancho máximo de lectura.
+**Spotify** / **Música**) y, en pantallas anchas, navegación arriba y un ancho máximo de lectura.
 
 - **Pantalla principal**: arriba la **próxima alarma** (hora grande y cuánto falta; el sol del
   horizonte sube según se acerca). Debajo, la lista con un interruptor para activar o desactivar cada
@@ -633,7 +687,9 @@ La interfaz está pensada primero para el móvil: oscura, con navegación inferi
 app.py              # create_app(), rutas y validación de formularios
 db.py               # conexión SQLite y consultas (sin ORM)
 scheduler.py        # APScheduler: revisa alarmas cada minuto y las dispara
-audio_player.py     # AudioPlayer / LocalAudioPlayer (winsound o aplay)
+audio_player.py     # LocalAudioPlayer (WAV de emergencia) y FfmpegPlayer (música local)
+music_library.py    # biblioteca instance/music/: pistas, validación, subida, borrado, selección
+music_views.py      # rutas /music/... (ver, subir, eliminar)
 spotify_client.py   # todo el HTTP con Spotify: OAuth, refresh, errores
 spotify_views.py    # rutas /spotify/...
 spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> reproducir
@@ -644,18 +700,18 @@ serve.py            # arranque de producción (waitress, red local)
 deploy/             # plantilla systemd + install-service.sh; regla polkit de Bluetooth
 .env.example        # plantilla de configuración (copiar a .env)
 schema.sql          # tablas "alarms", "spotify_auth" y "settings"
-sounds/             # alarm.wav (no se sube a git)
+sounds/             # alarm.wav, el WAV de emergencia (no se sube a git)
 tools/              # make_test_sound.py (WAV de prueba), make_icons.py (iconos PWA)
 ui.py               # ayudas de presentación (próxima alarma, textos)
 templates/          # HTML (Jinja2)
 static/             # CSS y un poco de JS (confirmar borrado)
 tests/              # tests con unittest
-instance/           # base de datos y log local (no se suben a git)
+instance/           # base de datos, log y music/ (no se suben a git)
 ```
 
 Cada alarma guarda `name`, `time` (`HH:MM`), `days` (p. ej. `"0,2,4"`, donde 0 = lunes y vacío = una vez),
 `enabled`, `last_triggered`, `source` (`local` o `spotify`), `spotify_uri`,
-`volume_start`, `volume_end`, `fade_minutes` y `max_duration_minutes` (auto-stop; 0 = sin límite).
+`volume_start`, `volume_end`, `fade_minutes` `max_duration_minutes` (auto-stop; 0 = sin límite) y `local_track` (música local; vacío = aleatoria).
 
 ## Próximos pasos
 

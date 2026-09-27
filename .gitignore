@@ -8,3 +8,6 @@ instance/
 # Sonidos locales: no subir binarios al repo
 sounds/*
 !sounds/.gitkeep
+
+instance/music/*
+!instance/music/.gitkeep

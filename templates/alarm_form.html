@@ -95,6 +95,34 @@
         <p class="hint" data-fade-summary hidden></p>
       </div>
     </div>
+    {# Misma selección para alarmas locales y como respaldo de Spotify. #}
+    {% set missing = data.local_track and data.local_track not in tracks %}
+    <div class="field local-track-field">
+      {% if tracks or missing %}
+        <label for="local_track" data-track-label data-label-local="Música local"
+               data-label-spotify="Música de respaldo">{{ "Música de respaldo" if data.source == "spotify" else "Música local" }}</label>
+        <select id="local_track" name="local_track" {% if missing %}aria-describedby="local-track-missing"{% endif %}>
+          <option value="" {% if not data.local_track %}selected{% endif %}>Aleatorio</option>
+          {% for track in tracks %}
+            <option value="{{ track }}" {% if track == data.local_track %}selected{% endif %}>{{ track }}</option>
+          {% endfor %}
+          {% if missing %}
+            <option value="{{ data.local_track }}" selected>{{ data.local_track }} (no disponible)</option>
+          {% endif %}
+        </select>
+        {% if missing %}
+          <p class="hint hint-warning" id="local-track-missing" role="alert">«{{ data.local_track }}» ya no está
+            en la música local: mientras no elijas otra, sonará el sonido de emergencia.</p>
+        {% else %}
+          <p class="hint">Aleatorio elige una pista distinta cada vez que suena (también tras +10 MIN).
+            Si Spotify falla, suena esta música.</p>
+        {% endif %}
+      {% else %}
+        <p class="field-label">Música local</p>
+        <p class="hint">Aún no hay música local: sonará el sonido de emergencia.
+          <a href="{{ url_for('music.index') }}">Sube MP3, OGG o WAV en Música</a>.</p>
+      {% endif %}
+    </div>
   </fieldset>
 
   <div class="field">

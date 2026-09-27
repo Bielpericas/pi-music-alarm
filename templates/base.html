@@ -1,5 +1,5 @@
 {% from "_icons.html" import icon, logo %}
-{% set section = "spotify" if request.blueprint == "spotify" else "alarms" %}
+{% set section = request.blueprint if request.blueprint in ("spotify", "music") else "alarms" %}
 <!doctype html>
 <html lang="es" class="{% block page_class %}page-default{% endblock %}">
 <head>
@@ -26,6 +26,7 @@
     <nav class="nav nav-top" aria-label="Secciones">
       <a href="{{ url_for('index') }}" {% if section == "alarms" %}aria-current="page"{% endif %}>Alarmas</a>
       <a href="{{ url_for('spotify.index') }}" {% if section == "spotify" %}aria-current="page"{% endif %}>Spotify</a>
+      <a href="{{ url_for('music.index') }}" {% if section == "music" %}aria-current="page"{% endif %}>Música</a>
     </nav>
     <p class="status" data-connection role="status">
       <span class="status-dot" aria-hidden="true"></span><span data-connection-text>En línea</span>
@@ -63,6 +64,9 @@
     </a>
     <a href="{{ url_for('spotify.index') }}" {% if section == "spotify" %}aria-current="page"{% endif %}>
       {{ icon("music") }}<span>Spotify</span>
+    </a>
+    <a href="{{ url_for('music.index') }}" {% if section == "music" %}aria-current="page"{% endif %}>
+      {{ icon("note") }}<span>Música</span>
     </a>
   </nav>
 

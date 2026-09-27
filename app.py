@@ -9,11 +9,13 @@ from flask import (
 from werkzeug.serving import is_running_from_reloader
 
 import db
+import music_views
 import scheduler
 import spotify_views
 import ui
-from audio_player import create_player
+from audio_player import create_music_player, create_player
 from bluetooth_audio import DEFAULT_SERVICE as DEFAULT_BLUETOOTH_SERVICE, NoBluetooth, create_bluetooth
+from music_library import LocalMusic, MusicLibrary
 from playback import AlarmPlaybackManager
 from spotify_client import create_spotify_client, parse_spotify_uri
 from spotify_player import RETRY_DELAYS, SpotifyAlarmPlayer
@@ -43,8 +45,12 @@ def _int_field(form, key, default, low, high, label, errors):
     return value
 
 
-def validate_alarm_form(form):
-    """Devuelve (datos, errores) a partir del formulario."""
+def validate_alarm_form(form, tracks=(), keep_track=None):
+    """Devuelve (datos, errores) a partir del formulario.
+
+    `tracks`: pistas de la biblioteca. `keep_track`: la pista que ya tenía la
+    alarma, que se puede conservar aunque ahora no esté (se avisa en el formulario).
+    """
     errors = []
     name = form.get("name", "").strip()
     time = form.get("time", "").strip()
@@ -94,10 +100,17 @@ def validate_alarm_form(form):
         errors.append("Elige una duración máxima de la lista.")
         max_duration = db.DEFAULT_MAX_DURATION
 
+    # Música local: solo un nombre de la biblioteca (nunca una ruta). Vacío = aleatoria.
+    local_track = form.get("local_track", "").strip() or None
+    if local_track is not None and local_track not in tracks and local_track != keep_track:
+        errors.append("La música local elegida no está en la biblioteca.")
+        local_track = None
+
     data = {"name": name, "time": time, "days": days,
             "source": source, "spotify_uri": spotify_uri,
             "volume_start": volume_start, "volume_end": volume_end,
-            "fade_minutes": fade_minutes, "max_duration_minutes": max_duration}
+            "fade_minutes": fade_minutes, "max_duration_minutes": max_duration,
+            "local_track": local_track}
     return data, errors
 
 
@@ -136,8 +149,16 @@ def format_days(days_csv):
     return ", ".join(DAY_NAMES[d] for d in days)
 
 
-def create_app(config=None, player=None, spotify=None, bluetooth=None):
-    """Crea la app. `player`, `spotify` y `bluetooth` permiten inyectar dobles (mocks) en tests."""
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def create_app(config=None, player=None, spotify=None, bluetooth=None, music=None):
+    """Crea la app. `player`, `spotify`, `bluetooth` y `music` permiten inyectar
+    dobles (mocks) en tests."""
     app = Flask(__name__, instance_relative_config=True)
     app.config.update(
         SECRET_KEY=os.environ.get("SECRET_KEY", "dev"),
@@ -146,7 +167,11 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
         SCHEDULER_ENABLED=True,
         AUDIO_BACKEND=os.environ.get("AUDIO_BACKEND", "local"),
         SOUND_PATH=os.environ.get("ALARM_SOUND", str(DEFAULT_SOUND)),
-        ALSA_DEVICE=os.environ.get("ALSA_DEVICE", ""),  # solo Linux (aplay -D)
+        ALSA_DEVICE=os.environ.get("ALSA_DEVICE", ""),  # solo Linux (aplay -D y ffmpeg)
+        # Biblioteca de música local (instance/music/, junto a la BD): ffmpeg la
+        # reproduce por ALSA_DEVICE (o plughw:CARD=Device,DEV=0 si está vacío).
+        FFMPEG_BINARY=os.environ.get("FFMPEG_BINARY", "ffmpeg"),
+        LOCAL_MUSIC_MAX_UPLOAD_MB=_env_int("LOCAL_MUSIC_MAX_UPLOAD_MB", 50),
         # Servicio systemd del reproductor Bluetooth que se para mientras suena
         # una alarma ("none" = no gestionar Bluetooth). Ver bluetooth_audio.py.
         BLUETOOTH_SERVICE=os.environ.get("BLUETOOTH_SERVICE", DEFAULT_BLUETOOTH_SERVICE),
@@ -161,11 +186,23 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
     )
     if config:
         app.config.update(config)
+    app.config.setdefault("MUSIC_DIR", str(Path(app.config["DATABASE"]).parent / "music"))
+    # Límite de la petición entera: el fichero más el margen del multipart.
+    # music_views vuelve a comprobar el tamaño exacto del fichero al guardarlo.
+    if app.config.get("MAX_CONTENT_LENGTH") is None:  # Flask lo trae a None (sin límite)
+        app.config["MAX_CONTENT_LENGTH"] = (app.config["LOCAL_MUSIC_MAX_UPLOAD_MB"] + 1) * 1024 * 1024
 
     db.init_app(app)
     scheduler.setup_logging(app.config["ALARM_LOG"])
     app.jinja_env.filters["format_days"] = format_days
     app.extensions["audio_player"] = player or create_player(app.config)
+    library = MusicLibrary(app.config["MUSIC_DIR"])
+    library.ensure_dir()
+    app.extensions["music_library"] = library
+    if music is None and not app.testing:  # en tests nunca se lanza ffmpeg
+        track_player = create_music_player(app.config)
+        music = LocalMusic(library, track_player) if track_player else None
+    app.extensions["music"] = music
     app.extensions["spotify"] = spotify or create_spotify_client(app.config)
     # En tests nunca se toca systemd salvo que se inyecte un doble.
     app.extensions["bluetooth"] = bluetooth or (
@@ -179,12 +216,14 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
     app.jinja_env.filters["describe_volume"] = describe_volume
     app.jinja_env.filters["fade_label"] = ui.fade_label
     app.jinja_env.filters["duration_label"] = ui.duration_label
+    app.jinja_env.filters["human_size"] = ui.human_size
     app.jinja_env.filters["selected_days"] = ui.selected_days
     app.register_blueprint(spotify_views.bp)
+    app.register_blueprint(music_views.bp)
     # Estado de la alarma que suena (STOP / +10 MIN). Ver playback.py.
     playback = AlarmPlaybackManager(
         app.extensions["audio_player"], app.extensions["spotify_alarm"],
-        bluetooth=app.extensions["bluetooth"],
+        bluetooth=app.extensions["bluetooth"], music=app.extensions["music"],
     )
     app.extensions["playback"] = playback
 
@@ -215,12 +254,13 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
         return render_template(
             "alarm_form.html", data=data, errors=errors, day_names=DAY_NAMES,
             alarm_id=alarm_id, fade_choices=FADE_CHOICES, duration_choices=DURATION_CHOICES,
+            tracks=library.names(),  # se lee cada vez: lo subido aparece sin reiniciar
         ), status
 
     def alarm_fields(data):
         return (data["name"], data["time"], data["days"], data["source"],
                 data["spotify_uri"], data["volume_start"], data["volume_end"],
-                data["fade_minutes"], data["max_duration_minutes"])
+                data["fade_minutes"], data["max_duration_minutes"], data["local_track"])
 
     @app.get("/")
     def index():
@@ -259,7 +299,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
     @app.route("/alarms/new", methods=["GET", "POST"])
     def new_alarm():
         if request.method == "POST":
-            data, errors = validate_alarm_form(request.form)
+            data, errors = validate_alarm_form(request.form, library.names())
             if errors:
                 return render_form(form_echo(data), errors, 400)
             db.create_alarm(*alarm_fields(data))
@@ -270,7 +310,8 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
                             "volume_start": db.DEFAULT_VOLUME_START,
                             "volume_end": db.DEFAULT_VOLUME_END,
                             "fade_minutes": db.DEFAULT_FADE_MINUTES,
-                            "max_duration_minutes": db.DEFAULT_MAX_DURATION})
+                            "max_duration_minutes": db.DEFAULT_MAX_DURATION,
+                            "local_track": None})
 
     @app.route("/alarms/<int:alarm_id>/edit", methods=["GET", "POST"])
     def edit_alarm(alarm_id):
@@ -278,7 +319,8 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
         if alarm is None:
             abort(404)
         if request.method == "POST":
-            data, errors = validate_alarm_form(request.form)
+            data, errors = validate_alarm_form(request.form, library.names(),
+                                               keep_track=alarm["local_track"])
             if errors:
                 return render_form(form_echo(data), errors, 400, alarm_id)
             db.update_alarm(alarm_id, *alarm_fields(data))
@@ -291,7 +333,8 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
                             "volume_start": alarm["volume_start"],
                             "volume_end": alarm["volume_end"],
                             "fade_minutes": alarm["fade_minutes"],
-                            "max_duration_minutes": alarm["max_duration_minutes"]},
+                            "max_duration_minutes": alarm["max_duration_minutes"],
+                            "local_track": alarm["local_track"]},
                            alarm_id=alarm_id)
 
     def form_echo(data):

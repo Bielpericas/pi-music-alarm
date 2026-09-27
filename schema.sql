@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS alarms (
     volume_start INTEGER NOT NULL DEFAULT 20,  -- % al empezar (solo Spotify por ahora)
     volume_end INTEGER NOT NULL DEFAULT 60,    -- % al terminar el fade-in
     fade_minutes INTEGER NOT NULL DEFAULT 5,   -- duración del fade-in (0 = sin fade)
-    max_duration_minutes INTEGER NOT NULL DEFAULT 30  -- auto-stop (0 = sin límite)
+    max_duration_minutes INTEGER NOT NULL DEFAULT 30,  -- auto-stop (0 = sin límite)
+    local_track TEXT                 -- pista de instance/music/ (solo el nombre); NULL = aleatoria
 );
 
 -- Tokens de Spotify (una sola fila). Viven en instance/, fuera del repositorio.

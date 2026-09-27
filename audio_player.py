@@ -1,8 +1,8 @@
 """Capa de reproducción de audio.
 
-`AudioPlayer` define la interfaz que usa el resto de la app. De momento solo
-existe `LocalAudioPlayer` (fichero WAV local); más adelante se podrá añadir un
-`SpotifyAudioPlayer` sin tocar el scheduler ni las rutas.
+`AudioPlayer` define la interfaz que usa el resto de la app.
+`LocalAudioPlayer` reproduce el WAV de emergencia (aplay / winsound) y
+`FfmpegPlayer` las pistas de la biblioteca local (MP3, OGG, WAV) con ffmpeg.
 
 Reglas comunes:
 - `play()` nunca bloquea: lanza la reproducción y vuelve enseguida.
@@ -131,6 +131,112 @@ class LocalAudioPlayer(AudioPlayer):
         if process.returncode and process.returncode > 0:
             message = stderr.decode(errors="replace").strip() if stderr else ""
             logger.error("aplay terminó con código %s: %s", process.returncode, message)
+
+
+DEFAULT_MUSIC_DEVICE = "plughw:CARD=Device,DEV=0"
+
+
+class FfmpegPlayer:
+    """Reproduce una pista (MP3, OGG o WAV) con ffmpeg hacia ALSA, en bucle.
+
+    - Un único proceso a la vez: play() para el anterior antes de lanzar otro.
+    - Sin shell: la ruta va como argumento suelto y ffmpeg no lee stdin.
+    - Si ffmpeg termina durante los primeros `startup_grace` segundos (no
+      instalado, fichero corrupto, tarjeta ocupada), play() devuelve False
+      para que la alarma use el WAV de emergencia.
+    - stop(): SIGTERM y, si no termina en `stop_timeout` s, SIGKILL. Nunca
+      deja procesos huérfanos ni lanza excepciones.
+    """
+
+    def __init__(self, binary="ffmpeg", alsa_device=DEFAULT_MUSIC_DEVICE,
+                 popen=subprocess.Popen, startup_grace=0.5, stop_timeout=2.0):
+        self.binary = binary or "ffmpeg"
+        self.alsa_device = alsa_device or DEFAULT_MUSIC_DEVICE
+        self._popen = popen
+        self.startup_grace = startup_grace
+        self.stop_timeout = stop_timeout
+        self._process = None
+        self._lock = threading.Lock()
+
+    def command(self, path):
+        return [self.binary, "-hide_banner", "-nostdin", "-loglevel", "error",
+                "-stream_loop", "-1", "-i", str(path), "-f", "alsa", self.alsa_device]
+
+    def play(self, path):
+        self.stop()
+        try:
+            process = self._popen(self.command(path), stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except FileNotFoundError:
+            logger.error("ffmpeg no está instalado (%s). En Raspberry Pi OS: "
+                         "sudo apt install -y ffmpeg", self.binary)
+            return False
+        except Exception:
+            logger.exception("No se pudo lanzar ffmpeg para %s", path)
+            return False
+        try:
+            process.wait(timeout=self.startup_grace)
+        except subprocess.TimeoutExpired:
+            with self._lock:
+                self._process = process
+            threading.Thread(target=self._watch, args=(process,), daemon=True).start()
+            return True
+        except Exception:
+            logger.exception("Error esperando a ffmpeg")
+            self._terminate(process)
+            return False
+        # Terminó enseguida: no está sonando nada.
+        logger.error("ffmpeg terminó al empezar (código %s) con %s: %s",
+                     process.returncode, Path(path).name, _stderr_text(process))
+        return False
+
+    def stop(self):
+        with self._lock:
+            process, self._process = self._process, None
+        if process is None:
+            return True
+        return self._terminate(process)
+
+    def _terminate(self, process):
+        try:
+            if process.poll() is not None:
+                return True
+            process.terminate()
+            try:
+                process.wait(timeout=self.stop_timeout)
+                return True
+            except subprocess.TimeoutExpired:
+                logger.warning("ffmpeg no terminó en %s s: se fuerza (kill)", self.stop_timeout)
+            process.kill()
+            process.wait(timeout=self.stop_timeout)
+            return True
+        except Exception:
+            logger.exception("No se pudo detener ffmpeg")
+            return False
+
+    def _watch(self, process):
+        message = _stderr_text(process)
+        process.wait()
+        # Código negativo = lo hemos parado nosotros (SIGTERM/SIGKILL).
+        if process.returncode and process.returncode > 0:
+            logger.error("ffmpeg terminó con código %s: %s", process.returncode, message)
+
+
+def _stderr_text(process):
+    try:
+        data = process.stderr.read() if process.stderr is not None else b""
+    except Exception:
+        return ""
+    return data.decode(errors="replace").strip() if data else ""
+
+
+def create_music_player(config, platform=None):
+    """FfmpegPlayer para la biblioteca local, o None si no se puede usar aquí."""
+    platform = platform or sys.platform
+    if config.get("AUDIO_BACKEND", "local") != "local" or not platform.startswith("linux"):
+        return None  # Windows (desarrollo) o audio desactivado: solo WAV de emergencia
+    return FfmpegPlayer(config.get("FFMPEG_BINARY") or "ffmpeg",
+                        config.get("ALSA_DEVICE") or DEFAULT_MUSIC_DEVICE)
 
 
 def create_player(config):

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Música local · Groove{% endblock %}
+{% block content %}
+<div class="section-head">
+  <h1>Música local</h1>
+</div>
+
+<section class="card upload" aria-labelledby="upload-title">
+  <h2 id="upload-title" class="visually-hidden">Subir música</h2>
+  <form method="post" action="{{ url_for('music.upload') }}" enctype="multipart/form-data" class="upload-form">
+    <label for="file" class="upload-label">Archivo MP3, OGG o WAV</label>
+    <input id="file" name="file" type="file" accept="{{ accept }},audio/mpeg,audio/ogg,audio/wav" required>
+    <button class="btn btn-primary" type="submit">{{ icon("upload") }}<span>Subir</span></button>
+  </form>
+  <p class="hint">Máximo {{ max_mb }} MB por archivo. Suenan en las alarmas locales y cuando Spotify
+    falla. Si un archivo ya existe, cambia el nombre o borra el anterior.</p>
+</section>
+
+<section class="tracks" aria-labelledby="tracks-title">
+  <h2 id="tracks-title">Biblioteca</h2>
+  {% if tracks %}
+    <ul class="track-list">
+      {% for track in tracks %}
+        {% set used_by = usage[track.name] %}
+        <li class="track">
+          <span class="track-icon">{{ icon("note") }}</span>
+          <div class="track-info">
+            <span class="track-name">{{ track.name }}</span>
+            <span class="track-meta">
+              <span class="badge">{{ track.kind }}</span>
+              <span>{{ track.size | human_size }}</span>
+              {% if used_by %}<span>· elegida en {{ used_by | length }} {{ "alarma" if used_by | length == 1 else "alarmas" }}</span>{% endif %}
+            </span>
+          </div>
+          <form method="post" action="{{ url_for('music.delete') }}"
+                data-confirm="¿Eliminar «{{ track.name }}»?{% if used_by %} La usan: {{ used_by | join(', ') }}. Esas alarmas sonarán con el sonido de emergencia hasta que elijas otra música.{% endif %}">
+            <input type="hidden" name="name" value="{{ track.name }}">
+            <button class="btn btn-quiet btn-small track-delete" type="submit"
+                    aria-label="Eliminar {{ track.name }}">{{ icon("trash") }}<span>Eliminar</span></button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty">
+      <p>Todavía no hay música local.</p>
+      <p class="muted">Sube un MP3, OGG o WAV. Mientras tanto, las alarmas locales suenan con el
+        sonido de emergencia.</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

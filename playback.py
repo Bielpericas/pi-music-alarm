@@ -25,6 +25,11 @@ Reglas:
   parado mientras suene la alarma, también con el WAV de respaldo o si otra
   alarma la sustituye. STOP y +10 MIN lo devuelven; al volver a sonar un
   snooze se para otra vez. Un fallo aquí nunca impide que suene la alarma.
+- Sonido local (alarmas locales y respaldo de Spotify): la pista de la
+  biblioteca (music_library.py) elegida o una al azar, elegida de nuevo cada
+  vez que la alarma empieza a sonar (también tras un snooze). Si no puede
+  sonar, el WAV de emergencia. STOP, snooze, auto-stop, borrar o sustituir
+  la alarma paran ambos (_stop_local).
 - Auto-stop: si la alarma tiene `max_duration_minutes` (> 0), al empezar a
   sonar se programa un job que la para por el mismo camino que STOP (fade,
   Spotify/WAV, estado y Bluetooth). No es un snooze: no se reprograma nada.
@@ -47,7 +52,8 @@ SNOOZE_MINUTES = 10
 ALARM_FIELDS = ("id", "name", "time", "source", "spotify_uri")
 VOLUME_FIELDS = ("volume_start", "volume_end", "fade_minutes")  # opcionales
 DURATION_FIELD = "max_duration_minutes"  # opcional; 0 o ausente = sin límite
-OPTIONAL_FIELDS = VOLUME_FIELDS + (DURATION_FIELD,)
+TRACK_FIELD = "local_track"  # opcional; pista de la biblioteca, None = aleatoria
+OPTIONAL_FIELDS = VOLUME_FIELDS + (DURATION_FIELD, TRACK_FIELD)
 
 
 def volume_settings(alarm):
@@ -61,13 +67,17 @@ def volume_settings(alarm):
     return start, fade_plan(start, end, seconds)
 
 
-def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=None):
+def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=None,
+                     music=None):
     """Hace sonar la alarma y devuelve "local", "spotify", "fallback" o "cancelled".
 
-    - Fuente "local": `player.play()` (el WAV). `volume` no se usa todavía.
+    Cadena: Spotify → música local (`music`: pista elegida o aleatoria de la
+    biblioteca) → WAV de emergencia (`player.play()`).
+    - Fuente "local": la música local; si no puede sonar, el WAV de emergencia.
     - Fuente "spotify": `spotify.play(uri)` (con `volume` inicial si se da);
-      si falla o no hay Spotify, el WAV. Si mientras tanto se pulsó STOP o
-      snooze (`interrupted`), no suena nada: "cancelled".
+      si falla o no hay Spotify, lo mismo que una alarma local. Si mientras
+      tanto se pulsó STOP o snooze (`interrupted`), no suena nada: "cancelled".
+    `volume` no se usa todavía con el sonido local.
     Nunca lanza excepciones: los fallos se registran.
     """
     name = alarm["name"]
@@ -88,6 +98,13 @@ def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=
     else:
         outcome = "local"
 
+    if music is not None:
+        try:
+            if music.play(alarm):
+                return outcome
+        except Exception:
+            logger.exception("La música local falló al disparar «%s»", name)
+        logger.warning("Sin música local para «%s»: suena el WAV de emergencia", name)
     if player is not None:
         try:
             player.play()
@@ -137,8 +154,9 @@ class StopResult(NamedTuple):
 class AlarmPlaybackManager:
     def __init__(self, player, spotify=None, schedule_once=None,
                  clock=datetime.now, snooze_minutes=SNOOZE_MINUTES, fader=None,
-                 bluetooth=None):
-        self.player = player                  # AudioPlayer local (WAV)
+                 bluetooth=None, music=None):
+        self.player = player                  # AudioPlayer local (WAV de emergencia)
+        self.music = music                    # LocalMusic (biblioteca + ffmpeg) o None
         self.spotify = spotify                # SpotifyAlarmPlayer o None
         self.bluetooth = bluetooth            # BluetoothAudio o None (pause/resume)
         self.schedule_once = schedule_once or timer_schedule_once
@@ -198,7 +216,8 @@ class AlarmPlaybackManager:
             initial_volume, plan = volume_settings(alarm)
             try:
                 via = play_alarm_sound(alarm, self.player, self.spotify,
-                                       volume=initial_volume, interrupted=starting)
+                                       volume=initial_volume, interrupted=starting,
+                                       music=self.music)
             finally:
                 self._starting = None
             # Si la anterior sonaba en Spotify y la nueva no la ha reemplazado
@@ -388,14 +407,21 @@ class AlarmPlaybackManager:
             logger.exception("No se pudo devolver Bluetooth tras la alarma")
 
     def _stop_local(self):
-        if self.player is None:
-            return True
-        try:
-            self.player.stop()
-            return True
-        except Exception:
-            logger.exception("No se pudo parar el sonido local")
-            return False
+        """Para la música local (ffmpeg) y el WAV de emergencia: pudo sonar cualquiera."""
+        silenced = True
+        if self.music is not None:
+            try:
+                silenced = self.music.stop() is not False
+            except Exception:
+                logger.exception("No se pudo parar la música local")
+                silenced = False
+        if self.player is not None:
+            try:
+                self.player.stop()
+            except Exception:
+                logger.exception("No se pudo parar el sonido local")
+                silenced = False
+        return silenced
 
     def _stop_spotify(self):
         if self.spotify is None:

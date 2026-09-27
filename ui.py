@@ -68,6 +68,13 @@ def sun_height(when, now):
     return round(max(0.0, min(1.0, 1 - remaining / 24)), 3)
 
 
+def human_size(size):
+    """Tamaño aproximado: "6.2 MB", "850 KB"."""
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    return f"{max(1, round(size / 1024))} KB"
+
+
 def duration_label(minutes):
     """Texto del desplegable de duración máxima (0 = sin límite)."""
     if minutes == 0:

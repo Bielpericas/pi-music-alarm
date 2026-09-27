@@ -9,16 +9,22 @@ document.addEventListener("submit", function (event) {
   }
 });
 
-// Formulario de alarma: los campos de Spotify solo se ven si la fuente es Spotify.
+// Formulario de alarma: los campos de Spotify solo se ven si la fuente es Spotify,
+// y la música local se llama «Música de respaldo» con Spotify.
 // Sin JavaScript se ven siempre, y el servidor valida igual.
 (function () {
   var field = document.querySelector("[data-spotify-field]");
   if (!field) return;
   var radios = document.querySelectorAll('input[name="source"]');
+  var trackLabel = document.querySelector("[data-track-label]");
 
   function update() {
     var checked = document.querySelector('input[name="source"]:checked');
-    field.hidden = !checked || checked.value !== "spotify";
+    var spotify = !!checked && checked.value === "spotify";
+    field.hidden = !spotify;
+    if (trackLabel) {
+      trackLabel.textContent = trackLabel.getAttribute(spotify ? "data-label-spotify" : "data-label-local");
+    }
   }
 
   for (var i = 0; i < radios.length; i++) {

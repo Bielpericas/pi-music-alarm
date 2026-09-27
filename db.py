@@ -17,6 +17,8 @@ MIGRATIONS = [
     ("fade_minutes", "INTEGER NOT NULL DEFAULT 5"),
     # Las alarmas existentes adoptan el valor por defecto (30 min).
     ("max_duration_minutes", "INTEGER NOT NULL DEFAULT 30"),
+    # Música local (alarmas locales y respaldo de Spotify). NULL = aleatoria.
+    ("local_track", "TEXT"),
 ]
 
 # Valores por defecto del volumen (Spotify): 20 % -> 60 % en 5 minutos.
@@ -81,30 +83,40 @@ def get_alarm(alarm_id):
 
 def create_alarm(name, time, days, source="local", spotify_uri=None,
                  volume_start=DEFAULT_VOLUME_START, volume_end=DEFAULT_VOLUME_END,
-                 fade_minutes=DEFAULT_FADE_MINUTES, max_duration_minutes=DEFAULT_MAX_DURATION):
+                 fade_minutes=DEFAULT_FADE_MINUTES, max_duration_minutes=DEFAULT_MAX_DURATION,
+                 local_track=None):
     db = get_db()
     db.execute(
         "INSERT INTO alarms (name, time, days, source, spotify_uri, volume_start,"
-        " volume_end, fade_minutes, max_duration_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " volume_end, fade_minutes, max_duration_minutes, local_track)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (name, time, ",".join(str(d) for d in days), source, spotify_uri,
-         volume_start, volume_end, fade_minutes, max_duration_minutes),
+         volume_start, volume_end, fade_minutes, max_duration_minutes, local_track),
     )
     db.commit()
 
 
 def update_alarm(alarm_id, name, time, days, source="local", spotify_uri=None,
                  volume_start=DEFAULT_VOLUME_START, volume_end=DEFAULT_VOLUME_END,
-                 fade_minutes=DEFAULT_FADE_MINUTES, max_duration_minutes=DEFAULT_MAX_DURATION):
+                 fade_minutes=DEFAULT_FADE_MINUTES, max_duration_minutes=DEFAULT_MAX_DURATION,
+                 local_track=None):
     db = get_db()
     cur = db.execute(
         "UPDATE alarms SET name = ?, time = ?, days = ?, source = ?, spotify_uri = ?,"
-        " volume_start = ?, volume_end = ?, fade_minutes = ?, max_duration_minutes = ?"
-        " WHERE id = ?",
+        " volume_start = ?, volume_end = ?, fade_minutes = ?, max_duration_minutes = ?,"
+        " local_track = ? WHERE id = ?",
         (name, time, ",".join(str(d) for d in days), source, spotify_uri,
-         volume_start, volume_end, fade_minutes, max_duration_minutes, alarm_id),
+         volume_start, volume_end, fade_minutes, max_duration_minutes, local_track, alarm_id),
     )
     db.commit()
     return cur.rowcount > 0
+
+
+def alarms_using_track(name):
+    """Nombres de las alarmas que tienen elegida la pista `name`."""
+    rows = get_db().execute(
+        "SELECT name FROM alarms WHERE local_track = ? ORDER BY time, name", (name,)).fetchall()
+    return [row["name"] for row in rows]
 
 
 def toggle_alarm(alarm_id):
