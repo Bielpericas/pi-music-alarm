@@ -19,6 +19,10 @@ MIGRATIONS = [
     ("max_duration_minutes", "INTEGER NOT NULL DEFAULT 30"),
     # Música local (alarmas locales y respaldo de Spotify). NULL = aleatoria.
     ("local_track", "TEXT"),
+    # Metadata de Spotify para mostrar (buscador). Las alarmas antiguas quedan en
+    # NULL y siguen sonando igual: la reproducción solo usa spotify_uri.
+    ("spotify_name", "TEXT"),
+    ("spotify_subtitle", "TEXT"),
 ]
 
 # Valores por defecto del volumen (Spotify): 20 % -> 60 % en 5 minutos.
@@ -84,14 +88,16 @@ def get_alarm(alarm_id):
 def create_alarm(name, time, days, source="local", spotify_uri=None,
                  volume_start=DEFAULT_VOLUME_START, volume_end=DEFAULT_VOLUME_END,
                  fade_minutes=DEFAULT_FADE_MINUTES, max_duration_minutes=DEFAULT_MAX_DURATION,
-                 local_track=None):
+                 local_track=None, spotify_name=None, spotify_subtitle=None):
     db = get_db()
     db.execute(
         "INSERT INTO alarms (name, time, days, source, spotify_uri, volume_start,"
-        " volume_end, fade_minutes, max_duration_minutes, local_track)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " volume_end, fade_minutes, max_duration_minutes, local_track,"
+        " spotify_name, spotify_subtitle)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (name, time, ",".join(str(d) for d in days), source, spotify_uri,
-         volume_start, volume_end, fade_minutes, max_duration_minutes, local_track),
+         volume_start, volume_end, fade_minutes, max_duration_minutes, local_track,
+         spotify_name, spotify_subtitle),
     )
     db.commit()
 
@@ -99,14 +105,15 @@ def create_alarm(name, time, days, source="local", spotify_uri=None,
 def update_alarm(alarm_id, name, time, days, source="local", spotify_uri=None,
                  volume_start=DEFAULT_VOLUME_START, volume_end=DEFAULT_VOLUME_END,
                  fade_minutes=DEFAULT_FADE_MINUTES, max_duration_minutes=DEFAULT_MAX_DURATION,
-                 local_track=None):
+                 local_track=None, spotify_name=None, spotify_subtitle=None):
     db = get_db()
     cur = db.execute(
         "UPDATE alarms SET name = ?, time = ?, days = ?, source = ?, spotify_uri = ?,"
         " volume_start = ?, volume_end = ?, fade_minutes = ?, max_duration_minutes = ?,"
-        " local_track = ? WHERE id = ?",
+        " local_track = ?, spotify_name = ?, spotify_subtitle = ? WHERE id = ?",
         (name, time, ",".join(str(d) for d in days), source, spotify_uri,
-         volume_start, volume_end, fade_minutes, max_duration_minutes, local_track, alarm_id),
+         volume_start, volume_end, fade_minutes, max_duration_minutes, local_track,
+         spotify_name, spotify_subtitle, alarm_id),
     )
     db.commit()
     return cur.rowcount > 0

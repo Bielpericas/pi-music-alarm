@@ -12,6 +12,8 @@ Referencias (revisadas en septiembre de 2026):
 - https://developer.spotify.com/documentation/web-api/tutorials/refreshing-tokens
 - https://developer.spotify.com/documentation/web-api/concepts/redirect_uri
 - https://developer.spotify.com/documentation/web-api/concepts/rate-limits
+- https://developer.spotify.com/documentation/web-api/reference/search
+- https://developer.spotify.com/documentation/design (atribución de metadata)
 """
 import base64
 import json
@@ -35,6 +37,15 @@ SCOPES = ("user-read-playback-state", "user-modify-playback-state")
 TIMEOUT = 10             # segundos por petición
 REFRESH_MARGIN = 60      # renovar el token si caduca en menos de esto
 MAX_RETRY_WAIT = 5       # esperar un 429 solo si Retry-After es corto
+
+# Buscador del formulario (interfaz): peticiones cortas, sin esperas ni reintentos.
+UI_TIMEOUT = 6           # segundos por petición del buscador / metadata
+SEARCH_LIMIT = 5         # resultados por tipo (canciones, álbumes, playlists)
+SEARCH_MIN_CHARS = 2
+SEARCH_MAX_CHARS = 100
+SEARCH_TYPES = ("track", "album", "playlist")
+MAX_META_NAME = 120      # longitud máxima de los textos de metadata guardados
+MAX_META_SUBTITLE = 160
 
 
 # --- Errores ---------------------------------------------------------------
@@ -158,6 +169,8 @@ class SpotifyClient:
         self._sleep = sleep
         self._lock = threading.Lock()
         self._blocked_until = 0.0  # por un 429 con Retry-After largo
+        # 429 del buscador: solo frena al buscador, nunca a las alarmas.
+        self._ui_blocked_until = 0.0
 
     # Estado
 
@@ -241,6 +254,46 @@ class SpotifyClient:
             return None
         return total if isinstance(total, int) and not isinstance(total, bool) else None
 
+    # Buscador y metadata (formulario de alarmas). Nunca los usa el reproductor.
+
+    def search(self, query, limit=SEARCH_LIMIT):
+        """Busca canciones, álbumes y playlists (GET /search).
+
+        Devuelve {"tracks": [...], "albums": [...], "playlists": [...]} con
+        elementos normalizados (ver `normalize_item`). Con menos de
+        SEARCH_MIN_CHARS caracteres no llama a Spotify. Un 429 no se reintenta:
+        el buscador queda en pausa `retry_after` segundos (solo el buscador).
+        """
+        query = " ".join((query or "").split())[:SEARCH_MAX_CHARS]
+        if len(query) < SEARCH_MIN_CHARS:
+            return empty_search()
+        params = {"q": query, "type": ",".join(SEARCH_TYPES), "limit": int(limit),
+                  "market": "from_token"}
+        data = self._ui_api("/search", params)
+        if not isinstance(data, dict) or not any(key in data for key in _SEARCH_KEYS.values()):
+            # JSON roto o sin ninguna sección: no es "sin resultados", es un error.
+            raise SpotifyError("Spotify devolvió una respuesta inesperada.")
+        return normalize_search(data)
+
+    def get_item(self, uri):
+        """Metadata normalizada de una canción, álbum o playlist (o None).
+
+        Para mostrar alarmas antiguas que solo guardan el URI. Lanza
+        SpotifyError si Spotify no responde; ValueError si el URI no es válido.
+        """
+        uri = parse_spotify_uri(uri)
+        kind, item_id = uri.split(":")[1:]
+        if kind == "playlist":
+            data = self._ui_api(f"/playlists/{item_id}",
+                                {"fields": "uri,name,owner(display_name,id),images"})
+        elif kind == "album":
+            data = self._ui_api(f"/albums/{item_id}", {"market": "from_token"})
+        else:
+            data = self._ui_api(f"/tracks/{item_id}", {"market": "from_token"})
+        item = normalize_item(data, kind)
+        # Spotify puede devolver otro id (relinking); lo que vale es el URI de la alarma.
+        return dict(item, uri=uri, external_url=spotify_web_url(uri)) if item else None
+
     def pause(self, device_id=None):
         self._api("PUT", "/me/player/pause", params=_device(device_id))
 
@@ -319,7 +372,22 @@ class SpotifyClient:
             )
         raise SpotifyError(f"Error pidiendo token a Spotify: {error}", status)
 
-    def _api(self, method, path, params=None, body=None, timeout=None):
+    def _ui_api(self, path, params):
+        """GET para la interfaz: timeout corto y un 429 no espera ni reintenta."""
+        remaining = self._ui_blocked_until - self._clock()
+        if remaining > 0:
+            raise SpotifyRateLimitError(
+                f"Spotify pidió esperar; inténtalo en {int(remaining) + 1} s.",
+                int(remaining) + 1,
+            )
+        try:
+            return self._api("GET", path, params=params, timeout=UI_TIMEOUT, interactive=True)
+        except SpotifyRateLimitError as exc:
+            self._ui_blocked_until = max(self._ui_blocked_until,
+                                         self._clock() + exc.retry_after)
+            raise
+
+    def _api(self, method, path, params=None, body=None, timeout=None, interactive=False):
         url = API_BASE + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -343,7 +411,10 @@ class SpotifyClient:
                 token = self._access_token(force_refresh=True)
                 continue
             if status == 429:
-                error = self._rate_limit_error(resp_headers)
+                # Las peticiones de la interfaz no frenan a las alarmas (block=False).
+                error = self._rate_limit_error(resp_headers, block=not interactive)
+                if interactive:
+                    raise error
                 if not retried_rate and error.retry_after <= MAX_RETRY_WAIT:
                     retried_rate = True
                     logger.warning("Spotify 429: reintento en %ss", error.retry_after)
@@ -365,12 +436,12 @@ class SpotifyClient:
             reason = getattr(exc, "reason", exc)
             raise SpotifyConnectionError(f"No se pudo conectar con Spotify: {reason}") from exc
 
-    def _rate_limit_error(self, headers):
+    def _rate_limit_error(self, headers, block=True):
         try:
             retry_after = max(1, int(headers.get("retry-after", "1")))
         except ValueError:
             retry_after = 1
-        if retry_after > MAX_RETRY_WAIT:
+        if block and retry_after > MAX_RETRY_WAIT:
             self._blocked_until = self._clock() + retry_after
         return SpotifyRateLimitError(
             f"Demasiadas peticiones a Spotify; espera {retry_after} s.", retry_after
@@ -400,6 +471,114 @@ def parse_spotify_uri(text):
             "álbum o playlist."
         )
     return f"spotify:{match.group(1).lower()}:{match.group(2)}"
+
+
+def spotify_web_url(uri):
+    """Enlace a open.spotify.com construido solo a partir de un URI válido."""
+    kind, item_id = parse_spotify_uri(uri).split(":")[1:]
+    return f"https://open.spotify.com/{kind}/{item_id}"
+
+
+# --- Normalización (buscador y metadata) -----------------------------------
+#
+# Formato interno, igual para los tres tipos:
+#   {"uri": "spotify:<tipo>:<id>", "type": "track|album|playlist",
+#    "name": "...", "subtitle": "...", "external_url": "https://open.spotify.com/...",
+#    "image_url": "https://..." o None}
+# subtitle: artistas (canción y álbum) o propietario (playlist). Nada más del
+# JSON de Spotify. external_url se construye desde el URI, no desde la respuesta.
+
+_SEARCH_KEYS = {"track": "tracks", "album": "albums", "playlist": "playlists"}
+
+
+def empty_search():
+    return {key: [] for key in _SEARCH_KEYS.values()}
+
+
+def clean_text(value, max_len):
+    """Texto de una línea, sin caracteres de control y con longitud máxima."""
+    if not isinstance(value, str):
+        return ""
+    text = " ".join("".join(ch if ch.isprintable() else " " for ch in value).split())
+    return text[:max_len].rstrip()
+
+
+def normalize_search(data):
+    """Respuesta de GET /search -> {"tracks": [...], "albums": [...], "playlists": [...]}.
+
+    Tolera respuestas parciales o raras: tipos ausentes, `items` que no son
+    lista, elementos null (Spotify los manda en playlists) o sin URI válido.
+    """
+    results = empty_search()
+    if not isinstance(data, dict):
+        return results
+    for kind, key in _SEARCH_KEYS.items():
+        section = data.get(key)
+        items = section.get("items") if isinstance(section, dict) else None
+        if not isinstance(items, list):
+            continue
+        seen = set()
+        for raw in items:
+            item = normalize_item(raw, kind)
+            if item and item["uri"] not in seen:
+                seen.add(item["uri"])
+                results[key].append(item)
+    return results
+
+
+def normalize_item(raw, kind):
+    """Un track/album/playlist de Spotify -> formato interno, o None si no vale."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("uri"), str):
+        return None
+    try:
+        uri = parse_spotify_uri(raw["uri"])
+    except ValueError:
+        return None
+    name = clean_text(raw.get("name"), MAX_META_NAME)
+    if uri.split(":")[1] != kind or not name:
+        return None
+    if kind == "playlist":
+        owner = raw.get("owner") if isinstance(raw.get("owner"), dict) else {}
+        subtitle = owner.get("display_name") or owner.get("id")
+        images = raw.get("images")
+    else:
+        subtitle = _artists(raw.get("artists"))
+        album = raw.get("album") if kind == "track" else raw
+        images = album.get("images") if isinstance(album, dict) else None
+    return {
+        "uri": uri,
+        "type": kind,
+        "name": name,
+        "subtitle": clean_text(subtitle, MAX_META_SUBTITLE),
+        "external_url": spotify_web_url(uri),
+        "image_url": _thumbnail(images),
+    }
+
+
+def _artists(artists):
+    """"Daft Punk, Romanthony" a partir de la lista de artistas de Spotify."""
+    if not isinstance(artists, list):
+        return ""
+    names = [clean_text(a.get("name"), MAX_META_SUBTITLE) for a in artists if isinstance(a, dict)]
+    return ", ".join(name for name in names if name)
+
+
+def _thumbnail(images, target=64):
+    """URL https de la imagen más pequeña que llegue a `target` px (o None)."""
+    if not isinstance(images, list):
+        return None
+    candidates = []
+    for image in images:
+        url = image.get("url") if isinstance(image, dict) else None
+        if not isinstance(url, str) or not url.startswith("https://") or len(url) > 500:
+            continue
+        width = image.get("width")
+        width = width if isinstance(width, int) and not isinstance(width, bool) else 0
+        candidates.append((width, url))
+    if not candidates:
+        return None
+    big_enough = [c for c in candidates if c[0] >= target]
+    return min(big_enough)[1] if big_enough else max(candidates)[1]
 
 
 def _device(device_id):

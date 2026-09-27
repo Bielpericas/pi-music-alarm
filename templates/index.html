@@ -61,7 +61,7 @@
       <p class="next-name">{{ upcoming.name }}</p>
       <p class="next-when">{{ upcoming_day }} · {{ upcoming_countdown }}</p>
       <p class="next-meta">
-        <span class="badge {% if upcoming.source == 'spotify' %}badge-spotify{% endif %}">{{ upcoming | describe_source }}</span>
+        <span class="badge {% if upcoming.source == 'spotify' %}badge-spotify{% endif %}"><span class="badge-text">{{ upcoming | describe_source }}</span></span>
         {% if upcoming.source == 'spotify' %}<span class="next-volume">{{ upcoming | describe_volume }}</span>{% endif %}
       </p>
     </div>
@@ -82,7 +82,7 @@
           <p class="alarm-name">{{ alarm.name }}</p>
           <p class="alarm-meta">
             <span class="alarm-days">{{ alarm.days | format_days }}</span>
-            <span class="badge {% if alarm.source == 'spotify' %}badge-spotify{% endif %}">{{ alarm | describe_source }}</span>
+            <span class="badge {% if alarm.source == 'spotify' %}badge-spotify{% endif %}"><span class="badge-text">{{ alarm | describe_source }}</span></span>
           </p>
           {% if alarm.source == 'spotify' %}
             <p class="alarm-volume">{{ alarm | describe_volume }}</p>

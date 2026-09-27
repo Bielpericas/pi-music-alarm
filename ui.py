@@ -7,8 +7,11 @@ ni el scheduler.
 import math
 from datetime import datetime, timedelta
 
+from spotify_client import parse_spotify_uri, spotify_web_url
+
 DAY_LETTERS = ("L", "M", "X", "J", "V", "S", "D")
 DAY_FULL = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+SPOTIFY_KIND_LABELS = {"track": "Canción", "album": "Álbum", "playlist": "Playlist"}
 
 
 def next_occurrence(alarm, now):
@@ -89,6 +92,24 @@ def fade_label(minutes):
     if minutes == 1:
         return "Sube durante 1 minuto"
     return f"Sube durante {minutes} minutos"
+
+
+def spotify_kind(uri):
+    """"track", "album" o "playlist" según el URI (None si no es válido)."""
+    try:
+        return parse_spotify_uri(uri).split(":")[1]
+    except ValueError:
+        return None
+
+
+def spotify_kind_label(uri):
+    """"Canción", "Álbum" o "Playlist": el tipo sale del URI, no de la metadata."""
+    return SPOTIFY_KIND_LABELS.get(spotify_kind(uri), "Contenido")
+
+
+def spotify_link(uri):
+    """Enlace a open.spotify.com para un URI válido ("" si no lo es)."""
+    return spotify_web_url(uri) if spotify_kind(uri) else ""
 
 
 def selected_days(days_csv):

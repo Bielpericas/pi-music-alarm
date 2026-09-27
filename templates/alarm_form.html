@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% set editing = alarm_id is not none %}
 {% block page_class %}page-form{% endblock %}
 {% block title %}{{ "Editar alarma" if editing else "Nueva alarma" }} · Groove{% endblock %}
@@ -59,14 +60,88 @@
     </div>
 
     <div class="spotify-field" data-spotify-field>
-      <div class="field">
-        <label for="spotify_uri">Canción, álbum o playlist</label>
-        <input id="spotify_uri" name="spotify_uri" type="text" inputmode="url" autocomplete="off"
-               autocapitalize="off" spellcheck="false"
-               value="{{ data.spotify_uri or '' }}"
-               placeholder="https://open.spotify.com/playlist/…">
-        <p class="hint">Pega el enlace de Spotify (Compartir → Copiar enlace). Suena en el dispositivo
-          elegido en la sección Spotify; si falla, suena el sonido local.</p>
+      {# Buscador + selección. Lo que se guarda y reproduce es siempre spotify_uri
+         (validado en el servidor); nombre y subtítulo son solo para mostrar. #}
+      {% set sp_uri = data.spotify_uri or "" %}
+      {% set sp_kind = sp_uri | spotify_kind %}
+      {% set sp_named = sp_kind and data.spotify_name %}
+      <div class="field spotify-picker" data-spotify-picker
+           data-search-url="{{ url_for('spotify.search') }}"
+           data-lookup-url="{{ url_for('spotify.lookup') }}"
+           data-connected="{{ 'true' if spotify_connected else 'false' }}">
+        <p class="field-label">Contenido de Spotify</p>
+
+        <div class="spotify-selection" data-selection {% if not sp_kind %}hidden{% endif %}>
+          <span class="spotify-selection-check">{{ icon("check") }}</span>
+          <div class="spotify-selection-info">
+            <p class="spotify-selection-name {% if not sp_named %}is-uri{% endif %}" data-selection-name>
+              {{- data.spotify_name if sp_named else sp_uri -}}
+            </p>
+            <p class="spotify-selection-meta" data-selection-meta>
+              {%- if sp_named and data.spotify_subtitle -%}
+                {{ sp_uri | spotify_kind_label }} · {{ data.spotify_subtitle }}
+              {%- else -%}
+                {{ sp_uri | spotify_kind_label }} de Spotify
+              {%- endif -%}
+            </p>
+            <a class="spotify-open" data-selection-link href="{{ sp_uri | spotify_link }}"
+               target="_blank" rel="noopener noreferrer">Abrir en Spotify{{ icon("external") }}</a>
+          </div>
+          <button class="btn btn-quiet btn-small" type="button" data-selection-change hidden>Cambiar</button>
+        </div>
+
+        {% if spotify_connected %}
+          {# Sin JavaScript queda oculto: se usa el enlace manual. #}
+          <div class="spotify-search" data-search hidden>
+            <label class="visually-hidden" for="spotify_search">Buscar en Spotify</label>
+            <div class="search-box">
+              {{ icon("search") }}
+              <input id="spotify_search" type="search" enterkeyhint="search" maxlength="100"
+                     autocomplete="off" autocapitalize="off" spellcheck="false"
+                     placeholder="Buscar canción, álbum o playlist…"
+                     aria-describedby="spotify-search-status" aria-controls="spotify-results">
+            </div>
+            <p class="hint search-status" id="spotify-search-status" data-search-status
+               role="status" aria-live="polite"></p>
+            <div class="search-results" id="spotify-results" data-search-results></div>
+            <p class="hint spotify-attribution" data-search-attribution hidden>Resultados y portadas
+              de Spotify. Toca {{ icon("external") }} para abrirlo en Spotify.</p>
+          </div>
+          <template data-result-template>
+            <li class="search-result">
+              <button class="search-result-pick" type="button" data-pick>
+                <span class="search-result-art" data-art>{{ icon("note") }}</span>
+                <span class="search-result-text">
+                  <span class="search-result-name" data-name></span>
+                  <span class="search-result-sub" data-sub></span>
+                </span>
+              </button>
+              <a class="search-result-open" data-open target="_blank" rel="noopener noreferrer">{{ icon("external") }}</a>
+            </li>
+          </template>
+        {% else %}
+          <p class="hint spotify-connect">Conecta Spotify para buscar música desde Groove.
+            <a href="{{ url_for('spotify.index') }}">Ir a Spotify</a></p>
+        {% endif %}
+
+        <details class="manual-link" data-manual
+                 {% if not spotify_connected or (sp_uri and not sp_kind) %}open{% endif %}>
+          <summary>Introducir enlace manualmente</summary>
+          <div class="field">
+            <label for="spotify_uri">Enlace de canción, álbum o playlist</label>
+            <input id="spotify_uri" name="spotify_uri" type="text" inputmode="url" autocomplete="off"
+                   autocapitalize="off" spellcheck="false"
+                   value="{{ sp_uri }}"
+                   placeholder="https://open.spotify.com/playlist/…">
+            <p class="hint">Pega el enlace de Spotify (Compartir → Copiar enlace) o una URI
+              <code>spotify:…</code>.</p>
+          </div>
+        </details>
+        <input type="hidden" name="spotify_name" value="{{ data.spotify_name if sp_named else '' }}">
+        <input type="hidden" name="spotify_subtitle" value="{{ (data.spotify_subtitle or '') if sp_named else '' }}">
+        <input type="hidden" name="spotify_meta_uri" value="{{ sp_uri if sp_named else '' }}">
+        <p class="hint">Suena en el dispositivo elegido en la sección Spotify; si falla, suena la
+          música de respaldo.</p>
       </div>
 
       <div class="field">

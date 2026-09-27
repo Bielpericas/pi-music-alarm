@@ -2,12 +2,13 @@
 import secrets
 
 from flask import (
-    Blueprint, current_app, flash, redirect, render_template, request, session, url_for,
+    Blueprint, current_app, flash, jsonify, redirect, render_template, request, session, url_for,
 )
 
 import db
 from spotify_player import DEVICE_ID_KEY, DEVICE_NAME_KEY
 from spotify_client import (
+    SEARCH_MIN_CHARS,
     SpotifyAuthError,
     SpotifyConnectionError,
     SpotifyError,
@@ -164,3 +165,92 @@ def pause():
         except SpotifyError as exc:
             report(exc, "pause")
     return redirect(url_for("spotify.index"))
+
+
+# --- Buscador del formulario de alarmas (JSON para fetch) -------------------
+#
+# Solo lectura y aislado: cualquier fallo se convierte en un JSON de error y
+# nunca toca el scheduler, las alarmas ni el reproductor. No se registran ni la
+# búsqueda ni tokens/cabeceras: solo el tipo de error.
+
+def _json_response(payload, status=200, retry_after=None):
+    resp = jsonify(payload)
+    resp.status_code = status
+    resp.cache_control.no_store = True
+    if retry_after:
+        resp.headers["Retry-After"] = str(retry_after)
+    return resp
+
+
+def _json_error(code, message, status, retry_after=None):
+    payload = {"ok": False, "error": code, "message": message}
+    if retry_after:
+        payload["retry_after"] = retry_after
+    return _json_response(payload, status, retry_after)
+
+
+def _ui_error(exc, action):
+    """SpotifyError (o fallo inesperado) -> respuesta JSON con mensaje amable."""
+    current_app.logger.warning("Spotify (%s): %s", action, type(exc).__name__)
+    if isinstance(exc, SpotifyNotConfiguredError):
+        return _json_error("not_configured", "Spotify no está configurado en Groove.", 409)
+    if isinstance(exc, SpotifyAuthError):
+        return _json_error("auth", "La sesión de Spotify ha caducado. Vuelve a conectar "
+                           "Spotify.", 401)
+    if isinstance(exc, SpotifyForbiddenError):
+        return _json_error("forbidden", "Spotify no permite esta búsqueda con tu cuenta.", 403)
+    if isinstance(exc, SpotifyRateLimitError):
+        return _json_error("rate_limited", f"Spotify pide esperar {exc.retry_after} s antes "
+                           "de volver a buscar.", 429, exc.retry_after)
+    if isinstance(exc, SpotifyNotFoundError):
+        return _json_error("not_found", "Spotify no encuentra ese contenido.", 404)
+    if isinstance(exc, SpotifyConnectionError):
+        return _json_error("unavailable", "No se pudo conectar con Spotify. Comprueba la "
+                           "conexión a Internet.", 503)
+    return _json_error("spotify_error", "Spotify no respondió como se esperaba. Inténtalo "
+                       "de nuevo.", 502)
+
+
+def _require_linked():
+    spotify = client()
+    if not spotify.is_configured:
+        return _json_error("not_configured", "Spotify no está configurado en Groove.", 409)
+    if not spotify.is_connected():
+        return _json_error("not_connected", "Conecta Spotify para buscar música desde "
+                           "Groove.", 409)
+    return None
+
+
+@bp.get("/search")
+def search():
+    """GET /spotify/search?q=... -> resultados normalizados agrupados por tipo."""
+    query = " ".join(request.args.get("q", "").split())
+    if len(query) < SEARCH_MIN_CHARS:
+        return _json_error("short_query", f"Escribe al menos {SEARCH_MIN_CHARS} caracteres.",
+                           400)
+    try:
+        blocked = _require_linked()
+        if blocked:
+            return blocked
+        results = client().search(query)
+    except Exception as exc:  # noqa: BLE001 - el buscador nunca debe romper nada
+        return _ui_error(exc, "search")
+    return _json_response({"ok": True, "query": query, "results": results})
+
+
+@bp.get("/lookup")
+def lookup():
+    """GET /spotify/lookup?uri=... -> metadata de un URI/URL (alarmas antiguas)."""
+    try:
+        blocked = _require_linked()
+        if blocked:
+            return blocked
+        item = client().get_item(request.args.get("uri", ""))
+    except ValueError:
+        return _json_error("invalid_uri", "No es un enlace válido de canción, álbum o "
+                           "playlist de Spotify.", 400)
+    except Exception as exc:  # noqa: BLE001
+        return _ui_error(exc, "lookup")
+    if item is None:
+        return _json_error("not_found", "Spotify no encuentra ese contenido.", 404)
+    return _json_response({"ok": True, "item": item})

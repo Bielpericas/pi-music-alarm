@@ -484,9 +484,56 @@ Si algo falla, la página muestra el motivo: 403 = sin Premium o usuario fuera d
 
 ### Alarmas con Spotify
 
-Al crear o editar una alarma, en **Sonido** elige **Local (WAV)** o **Spotify**. Con Spotify, pega la
-URL (`https://open.spotify.com/playlist/...`, con o sin `?si=...`) o la URI (`spotify:playlist:...`)
-de una canción, un álbum o una playlist. Se guarda siempre como URI.
+Al crear o editar una alarma, en **Sonido** elige **Sonido local** o **Spotify**. Con Spotify, en
+**Contenido de Spotify** puedes buscar o pegar un enlace. Se guarda siempre como URI.
+
+#### Buscador integrado
+
+Con Spotify vinculado (página **Spotify** → **Conectar Spotify**), escribe en *Buscar canción, álbum o
+playlist…*. Groove busca a la vez **canciones, álbumes y playlists** (5 de cada, `GET /v1/search`) y
+los muestra agrupados, con portada si Spotify la da y un enlace para abrir cada resultado en
+Spotify. Al tocar uno queda seleccionado en una tarjeta (p. ej. *✓ Discovery · Álbum · Daft Punk*)
+con **Cambiar** para buscar otro; no hace falta copiar ninguna URI.
+
+- Solo busca a partir de 2 caracteres y espera ~400 ms a que dejes de escribir; las búsquedas
+  antiguas se cancelan y las repetidas salen de una pequeña caché del navegador.
+- Si Spotify responde 429, el buscador se pausa el tiempo que pida (`Retry-After`) sin reintentar;
+  eso **no** frena a las alarmas. Timeout de 6 s. Los errores se muestran con un mensaje corto.
+- Sin Spotify vinculado, en lugar del buscador aparece *Conecta Spotify para buscar música desde
+  Groove* con un enlace a la página Spotify.
+- El buscador usa el mismo OAuth y refresh de tokens que el resto de Groove (no hay otro login).
+
+Por dentro, el navegador llama a dos endpoints JSON internos (solo lectura):
+`GET /spotify/search?q=...` y `GET /spotify/lookup?uri=...` (metadata de un URI ya guardado).
+Devuelven cada elemento normalizado así (sin tokens ni el JSON de Spotify):
+
+```json
+{"uri": "spotify:album:…", "type": "album", "name": "Discovery", "subtitle": "Daft Punk",
+ "external_url": "https://open.spotify.com/album/…", "image_url": "https://i.scdn.co/…"}
+```
+
+`subtitle` son los artistas (canción y álbum) o el propietario (playlist); `image_url` puede ser
+`null`. Las portadas se cargan directamente desde Spotify (no se descargan ni se cachean en la Pi).
+
+#### Enlace manual
+
+**Introducir enlace manualmente** sigue aceptando exactamente lo de antes: la URL
+(`https://open.spotify.com/playlist/...`, con o sin `?si=...` o `intl-xx/`) o la URI
+(`spotify:playlist:...`) de una canción, un álbum o una playlist. Funciona también sin Spotify
+vinculado y sin JavaScript.
+
+#### Nombre guardado y alarmas antiguas
+
+Al elegir un resultado se guarda, junto al URI, una pequeña copia legible (`spotify_name` y
+`spotify_subtitle`) para verla al editar y en la lista (*Spotify · Discovery*). El tipo sale siempre
+del URI. El servidor **valida el URI con el mismo parser de siempre** (solo track, album y playlist),
+limpia y recorta los textos y los descarta si no corresponden a ese URI. La reproducción usa
+**solo el URI**: manipular el nombre desde el navegador no cambia lo que suena.
+
+Las alarmas creadas antes (solo URI) siguen funcionando igual. Al editarlas se muestra el URI y
+Groove intenta obtener el nombre desde Spotify; si lo consigue, se guarda al pulsar Guardar. Si
+Spotify no está disponible, se queda el URI tal cual: la alarma nunca se invalida ni se modifica por
+no poder leer su nombre.
 
 Cuando se dispara, o al pulsar **Probar**, que ejecuta exactamente el mismo flujo:
 
@@ -759,8 +806,8 @@ scheduler.py        # APScheduler: revisa alarmas cada minuto y las dispara
 audio_player.py     # LocalAudioPlayer (WAV de emergencia) y FfmpegPlayer (música local)
 music_library.py    # biblioteca instance/music/: pistas, validación, subida, borrado, selección
 music_views.py      # rutas /music/... (ver, subir, eliminar)
-spotify_client.py   # todo el HTTP con Spotify: OAuth, refresh, errores
-spotify_views.py    # rutas /spotify/...
+spotify_client.py   # todo el HTTP con Spotify: OAuth, refresh, errores, búsqueda y metadata
+spotify_views.py    # rutas /spotify/... (incluye /spotify/search y /spotify/lookup en JSON)
 spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> reproducir
 playback.py         # alarma sonando: estado, STOP y snooze
 bluetooth_audio.py  # para / arranca bluealsa-aplay alrededor de las alarmas (systemctl)
@@ -776,18 +823,18 @@ sounds/             # alarm.wav, el WAV de emergencia (no se sube a git)
 tools/              # make_test_sound.py (WAV de prueba), make_icons.py (iconos PWA)
 ui.py               # ayudas de presentación (próxima alarma, textos)
 templates/          # HTML (Jinja2)
-static/             # CSS y un poco de JS (confirmar borrado)
+static/             # CSS y JS vanilla (confirmar borrado, buscador de Spotify...)
 tests/              # tests con unittest
 instance/           # base de datos, log y music/ (no se suben a git)
 ```
 
 Cada alarma guarda `name`, `time` (`HH:MM`), `days` (p. ej. `"0,2,4"`, donde 0 = lunes y vacío = una vez),
 `enabled`, `last_triggered`, `source` (`local` o `spotify`), `spotify_uri`,
-`volume_start`, `volume_end`, `fade_minutes` `max_duration_minutes` (auto-stop; 0 = sin límite) y `local_track` (música local; vacío = aleatoria).
+`spotify_name` y `spotify_subtitle` (nombre legible del contenido, solo para mostrar; vacío en
+alarmas antiguas), `volume_start`, `volume_end`, `fade_minutes` `max_duration_minutes` (auto-stop; 0 = sin límite) y `local_track` (música local; vacío = aleatoria).
 
 ## Próximos pasos
 
-- Buscar canciones o playlists desde la app, en vez de pegar la URL.
 - Volumen progresivo y botón para parar o posponer la alarma.
 - librespot para que la propia Pi sea un dispositivo Spotify Connect.
 - Protección CSRF y un `SECRET_KEY` real (variable de entorno `SECRET_KEY`) si la app se expone fuera de la red local.

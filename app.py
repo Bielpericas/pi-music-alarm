@@ -20,7 +20,9 @@ from health import DEFAULT_BLUEALSA_SERVICE, DEFAULT_RASPOTIFY_SERVICE, HealthCh
 from music_library import LocalMusic, MusicLibrary
 from playback import AlarmPlaybackManager
 from preflight import DEFAULT_MINUTES as DEFAULT_PREFLIGHT_MINUTES, PreflightScheduler
-from spotify_client import create_spotify_client, parse_spotify_uri
+from spotify_client import (
+    MAX_META_NAME, MAX_META_SUBTITLE, clean_text, create_spotify_client, parse_spotify_uri,
+)
 from spotify_player import RETRY_DELAYS, SpotifyAlarmPlayer
 
 DEFAULT_SOUND = Path(__file__).parent / "sounds" / "alarm.wav"
@@ -80,11 +82,14 @@ def validate_alarm_form(form, tracks=(), keep_track=None):
     if source not in SOURCES:
         errors.append("Fuente de sonido no válida.")
         source = "local"
+    spotify_name = spotify_subtitle = None
     if source == "spotify":
         try:
             spotify_uri = parse_spotify_uri(spotify_uri)
         except ValueError as exc:
             errors.append(str(exc))
+        else:
+            spotify_name, spotify_subtitle = spotify_metadata(form, spotify_uri)
     else:
         spotify_uri = None  # las alarmas locales no guardan URI
 
@@ -111,10 +116,28 @@ def validate_alarm_form(form, tracks=(), keep_track=None):
 
     data = {"name": name, "time": time, "days": days,
             "source": source, "spotify_uri": spotify_uri,
+            "spotify_name": spotify_name, "spotify_subtitle": spotify_subtitle,
             "volume_start": volume_start, "volume_end": volume_end,
             "fade_minutes": fade_minutes, "max_duration_minutes": max_duration,
             "local_track": local_track}
     return data, errors
+
+
+def spotify_metadata(form, spotify_uri):
+    """(nombre, subtítulo) que manda el buscador para `spotify_uri`, saneados.
+
+    Solo es texto para mostrar: la reproducción usa únicamente el URI validado.
+    Se descarta si no corresponde a ese URI (p. ej. se eligió un resultado y
+    luego se pegó otro enlace a mano) o si viene vacía.
+    """
+    try:
+        meta_uri = parse_spotify_uri(form.get("spotify_meta_uri", ""))
+    except ValueError:
+        return None, None
+    name = clean_text(form.get("spotify_name", ""), MAX_META_NAME)
+    if meta_uri != spotify_uri or not name:
+        return None, None
+    return name, clean_text(form.get("spotify_subtitle", ""), MAX_META_SUBTITLE) or None
 
 
 def describe_volume(alarm):
@@ -126,9 +149,11 @@ def describe_volume(alarm):
 
 
 def describe_source(alarm):
-    """Texto corto para la lista: "Local" o "Spotify · playlist"."""
+    """Texto corto para la lista: "Local", "Spotify · Discovery" o, si no hay
+    metadata guardada, "Spotify · playlist"."""
     if alarm["source"] == "spotify" and alarm["spotify_uri"]:
-        return f"Spotify · {alarm['spotify_uri'].split(':')[1]}"
+        name = alarm["spotify_name"] if "spotify_name" in alarm.keys() else None
+        return f"Spotify · {name or alarm['spotify_uri'].split(':')[1]}"
     return "Local"
 
 
@@ -226,6 +251,9 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     app.jinja_env.filters["duration_label"] = ui.duration_label
     app.jinja_env.filters["human_size"] = ui.human_size
     app.jinja_env.filters["selected_days"] = ui.selected_days
+    app.jinja_env.filters["spotify_kind"] = ui.spotify_kind
+    app.jinja_env.filters["spotify_kind_label"] = ui.spotify_kind_label
+    app.jinja_env.filters["spotify_link"] = ui.spotify_link
     app.register_blueprint(spotify_views.bp)
     app.register_blueprint(music_views.bp)
     app.register_blueprint(diagnostics_views.bp)
@@ -279,12 +307,23 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
             "alarm_form.html", data=data, errors=errors, day_names=DAY_NAMES,
             alarm_id=alarm_id, fade_choices=FADE_CHOICES, duration_choices=DURATION_CHOICES,
             tracks=library.names(),  # se lee cada vez: lo subido aparece sin reiniciar
+            # Sin red: solo mira si hay tokens guardados. El buscador lo necesita.
+            spotify_connected=spotify_linked(),
         ), status
+
+    def spotify_linked():
+        spotify = app.extensions["spotify"]
+        try:
+            return bool(spotify.is_configured and spotify.is_connected())
+        except Exception:  # el formulario nunca debe fallar por Spotify
+            app.logger.exception("No se pudo consultar el estado de Spotify")
+            return False
 
     def alarm_fields(data):
         return (data["name"], data["time"], data["days"], data["source"],
                 data["spotify_uri"], data["volume_start"], data["volume_end"],
-                data["fade_minutes"], data["max_duration_minutes"], data["local_track"])
+                data["fade_minutes"], data["max_duration_minutes"], data["local_track"],
+                data["spotify_name"], data["spotify_subtitle"])
 
     @app.get("/")
     def index():
@@ -332,6 +371,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
             return redirect(url_for("index"))
         return render_form({"name": "", "time": "07:00", "days": [],
                             "source": "local", "spotify_uri": "",
+                            "spotify_name": None, "spotify_subtitle": None,
                             "volume_start": db.DEFAULT_VOLUME_START,
                             "volume_end": db.DEFAULT_VOLUME_END,
                             "fade_minutes": db.DEFAULT_FADE_MINUTES,
@@ -356,6 +396,8 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         return render_form({"name": alarm["name"], "time": alarm["time"], "days": days,
                             "source": alarm["source"],
                             "spotify_uri": alarm["spotify_uri"] or "",
+                            "spotify_name": alarm["spotify_name"],
+                            "spotify_subtitle": alarm["spotify_subtitle"],
                             "volume_start": alarm["volume_start"],
                             "volume_end": alarm["volume_end"],
                             "fade_minutes": alarm["fade_minutes"],

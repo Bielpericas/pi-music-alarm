@@ -12,7 +12,11 @@ CREATE TABLE IF NOT EXISTS alarms (
     volume_end INTEGER NOT NULL DEFAULT 60,    -- % al terminar el fade-in
     fade_minutes INTEGER NOT NULL DEFAULT 5,   -- duración del fade-in (0 = sin fade)
     max_duration_minutes INTEGER NOT NULL DEFAULT 30,  -- auto-stop (0 = sin límite)
-    local_track TEXT                 -- pista de instance/music/ (solo el nombre); NULL = aleatoria
+    local_track TEXT,                -- pista de instance/music/ (solo el nombre); NULL = aleatoria
+    -- Metadata legible de spotify_uri (solo para mostrar; nunca se usa para reproducir).
+    -- El tipo sale del propio URI. NULL = alarma antigua o enlace pegado a mano.
+    spotify_name TEXT,               -- "Discovery"
+    spotify_subtitle TEXT            -- artistas o propietario de la playlist
 );
 
 -- Tokens de Spotify (una sola fila). Viven en instance/, fuera del repositorio.
