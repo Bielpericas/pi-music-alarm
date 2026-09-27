@@ -476,6 +476,44 @@ document.addEventListener("submit", function (event) {
   });
 })();
 
+// Bluetooth: cuenta atrás de la ventana de emparejamiento. El límite de 2
+// minutos lo aplica el servidor; esto solo lo muestra. Cada 2 s se pregunta el
+// estado y, cuando la ventana termina (emparejado, tiempo o cancelada), se
+// recarga la página para ver la lista de dispositivos actualizada.
+(function () {
+  var box = document.querySelector("[data-bt-pairing]");
+  if (!box || box.getAttribute("data-state") !== "active" || !window.fetch) return;
+  var url = box.getAttribute("data-status-url");
+  var label = box.querySelector("[data-bt-countdown]");
+  var deadline = Date.now() + parseInt(box.getAttribute("data-remaining"), 10) * 1000;
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+  function paint() {
+    var left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+    if (label) label.textContent = pad(Math.floor(left / 60)) + ":" + pad(left % 60);
+  }
+
+  function poll() {
+    fetch(url, { cache: "no-store", credentials: "same-origin" })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        var session = data.session;
+        if (!session || !session.active) {
+          window.location.reload();
+          return;
+        }
+        deadline = Date.now() + session.remaining * 1000;  // el servidor manda
+      })
+      .catch(function () {});
+  }
+
+  paint();
+  setInterval(paint, 1000);
+  setInterval(poll, 2000);
+})();
+
 // Estado de Groove cada 10 s (sin caché): si empieza a sonar una alarma o
 // cambia un snooze, se muestra; si Groove no responde, se avisa. No hay modo
 // offline: sin conexión con la Raspberry no se puede hacer nada.

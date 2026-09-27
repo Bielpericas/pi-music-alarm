@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block title %}Bluetooth · Groove{% endblock %}
+{% block content %}
+{% set pairing = session and session.active %}
+{% set groove_name = (adapter.alias if adapter and adapter.alias else "Groove") %}
+<div class="section-head">
+  <h1>Bluetooth</h1>
+  {% if available %}
+    <a class="btn btn-quiet btn-small" href="{{ url_for('bluetooth.index') }}">{{ icon("refresh") }}<span>Actualizar</span></a>
+  {% endif %}
+</div>
+
+{% if error %}
+  <p class="flash flash-error" role="alert">{{ error }}</p>
+{% endif %}
+
+{% if not available %}
+  <section class="card">
+    <p class="account-state"><span class="dot dot-off" aria-hidden="true"></span>No disponible aquí</p>
+    <p class="muted">Bluetooth solo se gestiona en la Raspberry (Linux con BlueZ).</p>
+  </section>
+{% elif not adapter or not adapter.available %}
+  <section class="card">
+    <p class="account-state"><span class="dot dot-off" aria-hidden="true"></span>Sin adaptador</p>
+    <p class="muted">No se encuentra el adaptador Bluetooth de Groove. Comprueba el servicio
+      <code>bluetooth</code> en la página Diagnóstico o en la Raspberry.</p>
+  </section>
+{% else %}
+  {# 1. Estado: adaptador, acceso (privado/visible) y audio. #}
+  <section class="card bt-status" aria-labelledby="bt-status-title">
+    <h2 id="bt-status-title" class="visually-hidden">Estado</h2>
+    <dl class="bt-facts">
+      <div>
+        <dt>Estado</dt>
+        <dd>
+          {% if adapter.powered %}<span class="dot dot-on" aria-hidden="true"></span>Activo
+          {% else %}<span class="dot dot-off" aria-hidden="true"></span>Apagado{% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Acceso</dt>
+        <dd>
+          {% if pairing or not adapter.private %}<span class="dot dot-sun" aria-hidden="true"></span>Visible
+          {% else %}{{ icon("lock") }}Privado{% endif %}
+        </dd>
+      </div>
+      {% if audio %}
+        <div>
+          <dt>Audio</dt>
+          <dd>
+            {% if playback_paused %}<span class="dot dot-sun" aria-hidden="true"></span>Pausado por la alarma
+            {% else %}<span class="dot {{ {'ok': 'dot-on', 'warning': 'dot-sun'}.get(audio.status, 'dot-off') }}" aria-hidden="true"></span>{{ audio.summary }}{% endif %}
+          </dd>
+        </div>
+      {% endif %}
+    </dl>
+    {% if not adapter.powered %}
+      <p class="muted">El adaptador está apagado: los dispositivos no pueden conectarse.</p>
+    {% elif pairing %}
+      <p class="muted">Groove está visible mientras dura el emparejamiento.</p>
+    {% elif adapter.private %}
+      <p class="muted">Groove está en modo privado. Tus dispositivos emparejados pueden conectarse.</p>
+    {% else %}
+      <p class="muted">Groove está visible para cualquier dispositivo cercano, aunque no hay ningún
+        emparejamiento abierto desde aquí.</p>
+      <form method="post" action="{{ url_for('bluetooth.make_private') }}">
+        <button class="btn btn-quiet btn-small" type="submit">{{ icon("lock") }}<span>Volver a privado</span></button>
+      </form>
+    {% endif %}
+    {% if playback_paused %}
+      <p class="hint">Audio Bluetooth pausado por la alarma: el adaptador y los dispositivos siguen
+        conectados y vuelve a sonar con STOP o +10 MIN.</p>
+    {% endif %}
+  </section>
+
+  {# 2. Emparejar: ventana de 2 minutos gestionada por el servidor. #}
+  <section class="card bt-pairing {% if pairing %}is-visible{% endif %}" data-bt-pairing
+           data-status-url="{{ url_for('bluetooth.status') }}"
+           data-state="{{ session.state if session else 'none' }}"
+           data-remaining="{{ session.remaining if pairing else 0 }}" aria-live="polite">
+    {% if pairing %}
+      <p class="bt-visible-title">{{ icon("bluetooth") }}<span>Groove está visible</span></p>
+      <p class="bt-countdown"><span data-bt-countdown>{{ "%02d:%02d" | format(session.remaining // 60, session.remaining % 60) }}</span> restantes</p>
+      <p class="muted">Busca «{{ groove_name }}» desde tu móvil, tablet u ordenador. En cuanto se
+        empareje un dispositivo, Groove vuelve a modo privado.</p>
+      <form method="post" action="{{ url_for('bluetooth.pairing_cancel') }}">
+        <button class="btn btn-quiet" type="submit">Cancelar emparejamiento</button>
+      </form>
+    {% else %}
+      {% if recent %}
+        {% if recent.state == "paired" %}
+          {% for device in recent.devices %}
+            <p class="bt-result is-ok">{{ icon("check") }}<span>«{{ device.name }}» emparejado{{ " y de confianza" if device.trusted else "" }}.</span></p>
+          {% endfor %}
+        {% elif recent.state == "timeout" %}
+          <p class="bt-result">Nadie se emparejó en 2 minutos. Groove vuelve a estar en modo privado.</p>
+        {% elif recent.state == "failed" %}
+          <p class="bt-result is-error">El emparejamiento se interrumpió. Groove vuelve a modo privado.</p>
+        {% endif %}
+      {% endif %}
+      <form method="post" action="{{ url_for('bluetooth.pairing_start') }}">
+        <button class="btn btn-primary bt-pair-btn" type="submit" {% if not adapter.powered %}disabled{% endif %}>
+          {{ icon("plus") }}<span>Emparejar nuevo dispositivo</span></button>
+      </form>
+      <p class="hint">Groove será visible 2 minutos, o hasta que se empareje un dispositivo.</p>
+    {% endif %}
+  </section>
+
+  {# 3. Dispositivos emparejados o de confianza. #}
+  <section class="bt-devices" aria-labelledby="bt-devices-title">
+    <h2 id="bt-devices-title">Tus dispositivos</h2>
+    {% if devices %}
+      <ul class="device-list">
+        {% for device in devices %}
+          <li class="device bt-device {% if device.connected %}is-selected{% endif %}">
+            <div class="bt-device-main">
+              <span class="device-icon">{{ icon("bluetooth") }}</span>
+              <div class="device-info">
+                <span class="device-name">{{ device.name }}</span>
+                <span class="device-meta">
+                  <span class="dot {{ 'dot-on' if device.connected else 'dot-idle' }}" aria-hidden="true"></span>
+                  {{ "Conectado" if device.connected else "Desconectado" }}
+                  {% if not device.trusted %}<span class="badge badge-off">sin confianza</span>{% endif %}
+                  {% if not device.paired %}<span class="badge">sin emparejar</span>{% endif %}
+                </span>
+                <details class="tech">
+                  <summary>Detalles técnicos</summary>
+                  <p>MAC <code>{{ device.mac }}</code> · Emparejado: {{ "sí" if device.paired else "no" }}
+                    · De confianza: {{ "sí" if device.trusted else "no" }}</p>
+                </details>
+              </div>
+            </div>
+            <div class="bt-actions">
+              {% if device.connected %}
+                <form method="post" action="{{ url_for('bluetooth.disconnect', mac=device.mac) }}">
+                  <button class="btn btn-quiet btn-small" type="submit">Desconectar</button>
+                </form>
+              {% else %}
+                <form method="post" action="{{ url_for('bluetooth.connect', mac=device.mac) }}">
+                  <button class="btn btn-quiet btn-small" type="submit">Conectar</button>
+                </form>
+              {% endif %}
+              {% if not device.trusted %}
+                <form method="post" action="{{ url_for('bluetooth.trust', mac=device.mac) }}">
+                  <button class="btn btn-quiet btn-small" type="submit">Confiar</button>
+                </form>
+              {% endif %}
+              <form method="post" action="{{ url_for('bluetooth.forget', mac=device.mac) }}"
+                    data-confirm="¿Olvidar {{ device.name }}? Tendrás que volver a emparejarlo para utilizarlo con Groove.">
+                <button class="btn btn-quiet btn-small bt-forget" type="submit">Olvidar</button>
+              </form>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="hint">Desconectar mantiene el emparejamiento; Olvidar lo borra y habrá que volver a
+        emparejar.</p>
+    {% else %}
+      <div class="empty">
+        <p>Aún no hay dispositivos emparejados.</p>
+        <p class="muted">Pulsa «Emparejar nuevo dispositivo» y busca «{{ groove_name }}» en tu móvil.</p>
+      </div>
+    {% endif %}
+  </section>
+{% endif %}
+{% endblock %}

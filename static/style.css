@@ -127,7 +127,7 @@ body.is-offline .status { color: var(--danger); }
 
 .nav-bottom {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
   height: calc(var(--nav-h) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   background: var(--dusk);
@@ -135,9 +135,22 @@ body.is-offline .status { color: var(--danger); }
 }
 .nav-bottom a {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-width: 0; padding: 0 2px;
   font-size: 0.75rem; font-weight: 600;
 }
+/* Cinco secciones: en móviles muy estrechos la etiqueta se acorta con "…"
+   (nunca se solapa ni baja de 12px). */
+.nav-bottom a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-bottom a[aria-current="page"] .icon { color: var(--sun); }
+
+/* Cinco secciones arriba: entre 760 y 899 px solo cabe el punto de conexión
+   (si se pierde, además aparece el aviso grande). */
+@media (min-width: 760px) and (max-width: 899px) {
+  .status [data-connection-text] {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
 
 @media (min-width: 760px) {
   :root { --bottom-chrome: var(--safe-bottom); } /* sin nav inferior */
@@ -146,9 +159,10 @@ body.is-offline .status { color: var(--danger); }
   .nav-bottom { display: none; }
   .nav-top { display: flex; gap: 4px; }
   .nav-top a {
-    display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px;
-    border-radius: 999px; font-weight: 600;
+    display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px;
+    border-radius: 999px; font-weight: 600; white-space: nowrap;
   }
+  .status { white-space: nowrap; }
   .nav-top a[aria-current="page"] { background: var(--dusk-2); }
   .app-header {
     padding-left: max(16px, calc((100vw - var(--page)) / 2));
@@ -199,6 +213,8 @@ body.is-offline .status { color: var(--danger); }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
 .dot-on { background: var(--spotify); }
 .dot-off { background: var(--danger); }
+.dot-sun { background: var(--sun); }
+.dot-idle { background: transparent; box-shadow: inset 0 0 0 2px var(--muted); }
 
 /* --- Avisos --- */
 
@@ -669,6 +685,42 @@ input[type="range"] { width: 100%; height: 44px; margin: 0; accent-color: var(--
 .check-badge { font-weight: 600; }
 .diag-error .check-badge { color: var(--danger); border-color: rgba(255, 122, 122, 0.5); }
 .check-detail { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+
+/* --- Bluetooth --- */
+
+.bt-facts { display: grid; gap: 8px; margin: 0; }
+.bt-facts div { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.bt-facts dt { color: var(--muted); }
+.bt-facts dd {
+  display: inline-flex; align-items: center; gap: 8px; margin: 0; min-width: 0;
+  font-weight: 650; text-align: right;
+}
+.bt-facts .icon { width: 18px; height: 18px; color: var(--ok); }
+.bt-status form { margin: 0; }
+.bt-status .btn { align-self: flex-start; }
+
+.bt-pairing form { margin: 0; }
+.bt-pairing.is-visible { border-color: var(--sun); }
+.bt-pair-btn { width: 100%; }
+.bt-visible-title { display: flex; align-items: center; gap: 10px; font-size: 1.2rem; font-weight: 700; }
+.bt-visible-title .icon { color: var(--sun); }
+.bt-countdown { font-family: var(--font-clock); font-size: 2.5rem; font-weight: 300; font-variant-numeric: tabular-nums; }
+.bt-countdown span { color: var(--sun); }
+.bt-result { display: flex; align-items: flex-start; gap: 8px; overflow-wrap: anywhere; }
+.bt-result .icon { color: var(--ok); flex: none; }
+.bt-result.is-error { color: var(--danger); }
+
+.bt-devices { display: flex; flex-direction: column; gap: 10px; }
+.bt-device { flex-direction: column; align-items: stretch; gap: 10px; }
+.bt-device-main { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.bt-device .device-icon { padding-top: 2px; }
+.bt-device.is-selected .device-icon { color: var(--sun); }
+.bt-device .tech summary { min-height: 32px; }
+.bt-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.bt-actions form { margin: 0; flex: 1 1 auto; }
+.bt-actions .btn { width: 100%; }
+.bt-forget { color: var(--danger); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* --- Movimiento reducido --- */
 

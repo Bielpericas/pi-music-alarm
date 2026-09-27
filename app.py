@@ -1,6 +1,7 @@
 """App Flask del despertador: CRUD de alarmas + scheduler + audio local + Spotify."""
 import os
 import re
+import threading
 from pathlib import Path
 
 from flask import (
@@ -8,6 +9,7 @@ from flask import (
 )
 from werkzeug.serving import is_running_from_reloader
 
+import bluetooth_views
 import db
 import diagnostics_views
 import music_views
@@ -16,6 +18,7 @@ import spotify_views
 import ui
 from audio_player import create_music_player, create_player
 from bluetooth_audio import DEFAULT_SERVICE as DEFAULT_BLUETOOTH_SERVICE, NoBluetooth, create_bluetooth
+from bluetooth_manager import NoBluetoothManager, create_bluetooth_manager, run_failsafe
 from health import DEFAULT_BLUEALSA_SERVICE, DEFAULT_RASPOTIFY_SERVICE, HealthChecker
 from music_library import LocalMusic, MusicLibrary
 from playback import AlarmPlaybackManager
@@ -184,9 +187,10 @@ def _env_int(name, default):
         return default
 
 
-def create_app(config=None, player=None, spotify=None, bluetooth=None, music=None):
-    """Crea la app. `player`, `spotify`, `bluetooth` y `music` permiten inyectar
-    dobles (mocks) en tests."""
+def create_app(config=None, player=None, spotify=None, bluetooth=None, music=None,
+               bluetooth_manager=None):
+    """Crea la app. `player`, `spotify`, `bluetooth`, `music` y `bluetooth_manager`
+    permiten inyectar dobles (mocks) en tests."""
     app = Flask(__name__, instance_relative_config=True)
     app.config.update(
         SECRET_KEY=os.environ.get("SECRET_KEY", "dev"),
@@ -203,6 +207,8 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         # Servicio systemd del reproductor Bluetooth que se para mientras suena
         # una alarma ("none" = no gestionar Bluetooth). Ver bluetooth_audio.py.
         BLUETOOTH_SERVICE=os.environ.get("BLUETOOTH_SERVICE", DEFAULT_BLUETOOTH_SERVICE),
+        # Página Bluetooth (BlueZ: dispositivos y emparejamiento). "off" la desactiva.
+        BLUEZ_MANAGEMENT=os.environ.get("BLUEZ_MANAGEMENT", "on"),
         # Diagnóstico (solo consulta su estado): BlueALSA y Raspotify.
         BLUEALSA_SERVICE=os.environ.get("BLUEALSA_SERVICE", DEFAULT_BLUEALSA_SERVICE),
         RASPOTIFY_SERVICE=os.environ.get("RASPOTIFY_SERVICE", DEFAULT_RASPOTIFY_SERVICE),
@@ -240,6 +246,19 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     # En tests nunca se toca systemd salvo que se inyecte un doble.
     app.extensions["bluetooth"] = bluetooth or (
         NoBluetooth() if app.testing else create_bluetooth(app.config))
+    # BlueZ (dispositivos y emparejamiento), separado del reproductor bluealsa-aplay.
+    manager = bluetooth_manager or (
+        NoBluetoothManager() if app.testing else create_bluetooth_manager(app.config))
+    app.extensions["bluetooth_manager"] = manager
+    # Fail-safe: Groove arranca siempre en modo privado (discoverable/pairable off),
+    # aunque una sesión anterior quedara abierta por un fallo. En segundo plano y
+    # sin lanzar nunca: un fallo se registra y el despertador arranca igual.
+    if bluetooth_manager is not None or not app.testing:
+        if app.testing:
+            run_failsafe(manager, delays=(0,))
+        else:
+            threading.Thread(target=run_failsafe, args=(manager,), name="bluetooth-failsafe",
+                             daemon=True).start()
     app.extensions["spotify_alarm"] = SpotifyAlarmPlayer(
         app.extensions["spotify"], app.config["DATABASE"],
         preferred_name=app.config["SPOTIFY_DEVICE_NAME"],
@@ -256,6 +275,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     app.jinja_env.filters["spotify_link"] = ui.spotify_link
     app.register_blueprint(spotify_views.bp)
     app.register_blueprint(music_views.bp)
+    app.register_blueprint(bluetooth_views.bp)
     app.register_blueprint(diagnostics_views.bp)
     # Estado de la alarma que suena (STOP / +10 MIN). Ver playback.py.
     playback = AlarmPlaybackManager(

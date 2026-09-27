@@ -279,8 +279,8 @@ y lo vuelve a arrancar después (ver [Bluetooth y alarmas](#bluetooth-y-alarmas)
 sudo apt install -y bluez bluez-alsa-utils polkitd
 ```
 
-`bluez-alsa-utils` trae `bluealsa` y `bluealsa-aplay` con sus servicios systemd. El emparejamiento
-del móvil se hace una vez con `bluetoothctl` (Groove no lo toca).
+`bluez-alsa-utils` trae `bluealsa` y `bluealsa-aplay` con sus servicios systemd. El móvil se empareja
+desde la página **Bluetooth** de Groove (ver [Bluetooth: dispositivos y emparejamiento](#bluetooth-dispositivos-y-emparejamiento-página-bluetooth)).
 
 **2. Hacer que `bluealsa-aplay` use la tarjeta USB.** Crea un *override* del servicio:
 
@@ -335,6 +335,110 @@ systemctl --no-ask-password disable bluealsa-aplay  # otro verbo: denegado
 **No uses** una regla de `sudoers` ni añadas tu usuario a grupos amplios: no hace falta.
 
 Para quitar el permiso: `sudo rm /etc/polkit-1/rules.d/50-pi-music-alarm-bluetooth.rules`.
+
+## Bluetooth: dispositivos y emparejamiento (página Bluetooth)
+
+La página **Bluetooth** gestiona BlueZ desde el navegador: ya no hace falta SSH ni `bluetoothctl`
+para el uso normal. Solo administra el adaptador y los dispositivos; la reproducción Bluetooth
+(`bluealsa-aplay`) y la prioridad de las alarmas siguen igual (ver
+[Bluetooth y alarmas](#bluetooth-y-alarmas)).
+
+Muestra:
+
+- **Estado**: el adaptador está *Activo* (encendido) o *Apagado*. Groove nunca apaga el adaptador.
+- **Acceso**: *Privado* (lo normal) o *Visible* (solo durante un emparejamiento).
+- **Audio**: el estado de `bluealsa`/`bluealsa-aplay` (el mismo check que Diagnóstico). Si suena una
+  alarma, se ve **«Pausado por la alarma»**: Groove ha parado `bluealsa-aplay`, pero el adaptador y
+  los dispositivos siguen conectados; vuelve con STOP o +10 MIN.
+- **Tus dispositivos**: los emparejados o de confianza, con *Conectado*/*Desconectado* y el aviso
+  *sin confianza* si hace falta. La MAC está en *Detalles técnicos*.
+
+### Modo privado
+
+Normalmente Groove está en **modo privado**: `Discoverable: no` y `Pairable: no`. Nadie nuevo lo ve
+ni puede emparejarse, pero **el adaptador sigue encendido** y tus dispositivos emparejados y de
+confianza (*trusted*) se reconectan sin problema: la visibilidad solo afecta a dispositivos nuevos.
+
+### Emparejar un dispositivo nuevo (ventana de 2 minutos)
+
+1. Pulsa **Emparejar nuevo dispositivo**. Groove queda visible 2 minutos («Groove está visible ·
+   01:42 restantes»).
+2. En el móvil, tablet u ordenador, busca **«Groove»** y empareja.
+3. En cuanto un dispositivo nuevo se empareja, Groove lo marca **de confianza** y **vuelve a
+   privado al momento**, sin esperar a los 2 minutos. Para añadir otro, pulsa de nuevo.
+
+Si nadie se empareja, a los 2 minutos Groove vuelve solo a privado. **El plazo lo controla el
+servidor**, no el navegador: da igual cerrar la página. **Cancelar emparejamiento** lo cierra antes.
+
+Cómo funciona por dentro (`bluetooth_manager.py`, el único módulo que habla con BlueZ):
+
+- Durante la ventana hay un `bluetoothctl --agent NoInputNoOutput` vivo (en un pseudo-terminal),
+  registrado como *default-agent*. Así el emparejamiento funciona de verdad en una Pi sin pantalla:
+  el agente contesta «yes» a las confirmaciones de esa ventana (y solo de esa ventana).
+- Groove activa `pairable on` y `discoverable on`, y fija `discoverable-timeout 120` para que
+  **BlueZ vuelva a ocultar a Groove por sí mismo** aunque Groove se cayera.
+- Un vigilante en el servidor revisa cada segundo el plazo y cada 2 s los emparejados. Se considera
+  nuevo lo que no estaba emparejado al abrir la ventana, o lo que BlueZ anuncia como emparejado
+  durante ella (`[CHG] Device … Paired: yes`). **Solo en esos se confía automáticamente**; nunca
+  en el resto de dispositivos conocidos.
+- Al cerrar (emparejado, tiempo, cancelación o error): `discoverable off`, `pairable off`, fin del
+  agente y, además, las dos órdenes otra vez por separado para asegurarlo.
+- Solo hay una ventana a la vez: pulsar dos veces devuelve la que ya está abierta.
+- **Fail-safe**: al arrancar Groove (tras un reinicio, un fallo o `systemctl restart`) se aplica
+  `discoverable off` y `pairable off` en segundo plano, con reintentos. Si falla, queda en el log y
+  el despertador arranca igual.
+
+### Conectar, desconectar, confiar y olvidar
+
+| Acción | Qué hace | Qué conserva |
+|---|---|---|
+| **Conectar** | pide a BlueZ que conecte el dispositivo (`connect`). No reproduce nada ni toca Spotify ni alarmas. | todo |
+| **Desconectar** | corta la conexión (`disconnect`). | emparejamiento, *bond* y confianza: se puede volver a conectar |
+| **Confiar** | solo aparece si está emparejado pero no es de confianza (`trust`). | todo |
+| **Olvidar** | pide confirmación y lo borra de BlueZ (`remove`). | nada: hay que volver a emparejarlo |
+
+Si no se puede conectar (apagado o lejos): *«No se pudo conectar. Comprueba que el dispositivo está
+encendido y cerca.»*; el detalle técnico va al log. Todas las acciones son `POST` a URLs concretas
+(`/bluetooth/devices/<MAC>/connect|disconnect|trust|forget`, `/bluetooth/pairing/start|cancel`,
+`/bluetooth/private`). La MAC se valida (`AA:BB:CC:DD:EE:FF`) y tiene que ser un dispositivo
+conocido. Los comandos nunca incluyen nombres de dispositivos ni usan shell, y los nombres se muestran
+siempre como texto escapado.
+
+### Permisos
+
+Groove ejecuta `bluetoothctl` con el usuario del servicio, **sin sudo ni polkit**: BlueZ permite a
+ese usuario gestionar su adaptador por D-Bus. Compruébalo con el mismo usuario que el servicio:
+
+```bash
+bluetoothctl show              # Powered: yes · Discoverable: no · Pairable: no
+bluetoothctl devices Paired
+```
+
+Si en la web alguna acción falla con *«No se pudo…»* y en el log (`instance/alarms.log`) aparece
+`org.bluez.Error.NotPermitted` o `Access denied` mientras que desde SSH funciona, compara `id` en
+SSH con los grupos del servicio. En ese caso basta con añadir el usuario al grupo `bluetooth`
+(`sudo usermod -aG bluetooth $USER` y reiniciar el servicio). No añadas reglas de polkit ni sudo
+amplias.
+
+`BLUEZ_MANAGEMENT=off` en `.env` desactiva la página (y el fail-safe) si no quieres que Groove toque
+BlueZ.
+
+### Recuperación manual (si la web fallara)
+
+```bash
+bluetoothctl show                          # estado del adaptador
+bluetoothctl discoverable off              # volver a privado
+bluetoothctl pairable off
+bluetoothctl devices Paired                # dispositivos emparejados
+bluetoothctl connect AA:BB:CC:DD:EE:FF     # conectar
+bluetoothctl disconnect AA:BB:CC:DD:EE:FF  # desconectar (sigue emparejado)
+bluetoothctl trust AA:BB:CC:DD:EE:FF       # confiar
+bluetoothctl remove AA:BB:CC:DD:EE:FF      # olvidar
+```
+
+Emparejar a mano (como antes): `bluetoothctl`, y dentro `agent NoInputNoOutput`, `default-agent`,
+`pairable on`, `discoverable on`; empareja desde el móvil; `trust <MAC>`, `discoverable off`,
+`pairable off`, `quit`.
 
 ## Cómo funciona el scheduler
 
@@ -841,6 +945,8 @@ spotify_views.py    # rutas /spotify/... (incluye /spotify/search y /spotify/loo
 spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> reproducir
 playback.py         # alarma sonando: estado, STOP y snooze
 bluetooth_audio.py  # para / arranca bluealsa-aplay alrededor de las alarmas (systemctl)
+bluetooth_manager.py # BlueZ (bluetoothctl): estado, dispositivos, ventana de emparejamiento
+bluetooth_views.py  # rutas /bluetooth/... (página, estado JSON y acciones POST)
 fade.py             # fade-in de volumen (Spotify)
 health.py           # health checks de solo lectura (Diagnóstico y pre-flight)
 preflight.py        # jobs preflight:<id> antes de cada alarma y su resumen en el log
