@@ -76,6 +76,12 @@ def search_body(tracks=(), albums=(), playlists=()):
             "playlists": {"items": list(playlists), "total": len(playlists)}}
 
 
+def webify(uri):
+    """spotify:<tipo>:<id> -> https://open.spotify.com/<tipo>/<id>?si=x"""
+    _, kind, item_id = uri.split(":")
+    return f"https://open.spotify.com/{kind}/{item_id}?si=x"
+
+
 def no_network(test):
     guard = mock.patch("urllib.request.urlopen",
                        side_effect=AssertionError("los tests no deben usar la red"))
@@ -249,6 +255,26 @@ class SpotifySearchClientTest(unittest.TestCase):
             client.search("daft punk")
         self.assertEqual((self.slept, len(self.transport.calls)), ([], 1))
 
+    def test_real_403_is_not_retried_and_keeps_the_link(self):
+        body = {"error": {"status": 403, "message": "Insufficient client scope"}}
+        client = self.make(resp(403, body))
+        with self.assertRaises(SpotifyForbiddenError) as ctx:
+            client.search("daft punk")
+        self.assertEqual(ctx.exception.api_message, "Insufficient client scope")
+        self.assertEqual(len(self.transport.calls), 1)  # ni refresh ni reintento
+        self.assertIsNotNone(self.store.data)           # sigue vinculado
+
+    def test_missing_scopes(self):
+        client = self.make()
+        self.store.data["scope"] = "user-read-playback-state user-modify-playback-state"
+        self.assertEqual(client.missing_scopes(), set())
+        self.store.data["scope"] = "user-read-playback-state"
+        self.assertEqual(client.missing_scopes(), {"user-modify-playback-state"})
+        self.store.data["scope"] = ""  # tokens antiguos sin scope guardado: no se asume nada
+        self.assertEqual(client.missing_scopes(), set())
+        self.store.data = None
+        self.assertEqual(client.missing_scopes(), set())
+
     # Red
 
     def test_timeout_and_network_down(self):
@@ -376,6 +402,7 @@ class AppTestCase(unittest.TestCase):
         self.spotify.is_configured = True
         self.spotify.redirect_uri = "http://127.0.0.1:5000/spotify/callback"
         self.spotify.is_connected.return_value = True
+        self.spotify.missing_scopes.return_value = set()
         self.spotify.get_devices.return_value = [
             {"id": "dev", "name": "Groove", "type": "Speaker", "is_active": True}]
         self.app = create_app(
@@ -439,7 +466,7 @@ class SearchEndpointTest(AppTestCase):
 
     def test_errors_become_friendly_json(self):
         cases = [
-            (SpotifyAuthError("token Bearer AT", 401), 401, "auth"),
+            (SpotifyAuthError("token Bearer AT", 401), 401, "reauth"),
             (SpotifyForbiddenError("403", 403), 403, "forbidden"),
             (SpotifyRateLimitError("429", 30), 429, "rate_limited"),
             (SpotifyConnectionError("timeout"), 503, "unavailable"),
@@ -454,11 +481,68 @@ class SearchEndpointTest(AppTestCase):
                     resp, data = self.get_json("/spotify/search?q=mi%20canci%C3%B3n%20secreta")
                 self.assertEqual((resp.status_code, data["ok"], data["error"]),
                                  (status, False, code))
-                self.assertTrue(data["message"])
+                # Todos recuerdan que el enlace manual sigue funcionando.
+                self.assertIn("pegar un enlace", data["message"])
                 # Ni tokens, ni cabeceras OAuth, ni la búsqueda en el log o la respuesta.
                 text = " ".join(logs.output) + json.dumps(data)
                 for secret in ("Bearer", "AT", "secreta"):
                     self.assertNotIn(secret, text)
+
+    def test_403_is_classified(self):
+        cases = [
+            # Falta de scopes según Spotify: hay que volver a vincular.
+            ({"api_message": "Insufficient client scope"}, "reauth"),
+            # La app/cuenta no tiene acceso al endpoint: vincular no lo arregla.
+            ({"api_message": "Active premium subscription required for the owner of the app"},
+             "app_access"),
+            ({"api_message": "User not registered in the Developer Dashboard"}, "app_access"),
+            # Otro 403 sin más datos: no se culpa a la cuenta.
+            ({}, "forbidden"),
+            ({"api_message": "Forbidden", "reason": "UNKNOWN"}, "forbidden"),
+        ]
+        for fields, code in cases:
+            with self.subTest(code=code, fields=fields):
+                self.spotify.search.side_effect = SpotifyForbiddenError("403", 403, **fields)
+                with self.assertLogs(self.app.logger, "WARNING") as logs:
+                    resp, data = self.get_json("/spotify/search?q=daft")
+                self.assertEqual((resp.status_code, data["error"], data["search_available"]),
+                                 (403, code, False))
+                self.assertIn("pegar un enlace de Spotify", data["message"])
+                self.assertNotIn("cuenta", data["message"])
+                if code == "reauth":
+                    self.assertTrue(data["message"].startswith(
+                        "Vuelve a vincular Spotify para activar la búsqueda."))
+                    self.assertEqual(data["action"], "reconnect")
+                else:
+                    self.assertTrue(data["message"].startswith(
+                        "La búsqueda de Spotify no está disponible."))
+                    self.assertNotIn("action", data)
+                # El motivo de Spotify queda en el log para diagnosticar.
+                if fields.get("api_message"):
+                    self.assertIn(fields["api_message"], " ".join(logs.output))
+        self.spotify.disconnect.assert_not_called()
+
+    def test_403_with_missing_scopes_asks_to_relink(self):
+        self.spotify.missing_scopes.return_value = {"user-read-private"}
+        self.spotify.search.side_effect = SpotifyForbiddenError("403", 403)
+        with self.assertLogs(self.app.logger, "WARNING"):
+            _, data = self.get_json("/spotify/search?q=daft")
+        self.assertEqual((data["error"], data["action"]), ("reauth", "reconnect"))
+
+    def test_expired_session_asks_to_relink_once(self):
+        self.spotify.search.side_effect = SpotifyAuthError("invalid_grant", 400, "invalid_grant")
+        with self.assertLogs(self.app.logger, "WARNING"):
+            resp, data = self.get_json("/spotify/search?q=daft")
+        self.assertEqual((resp.status_code, data["error"], data["search_available"]),
+                         (401, "reauth", False))
+        self.assertEqual(self.spotify.search.call_count, 1)  # sin bucles
+
+    def test_not_connected_message_mentions_manual_link(self):
+        self.spotify.is_connected.return_value = False
+        _, data = self.get_json("/spotify/search?q=daft")
+        self.assertEqual(data["message"], "Conecta Spotify para usar el buscador. "
+                                          "También puedes pegar un enlace directamente.")
+        self.assertFalse(data["search_available"])
 
     def test_429_exposes_retry_after(self):
         self.spotify.search.side_effect = SpotifyRateLimitError("429", 30)
@@ -527,33 +611,64 @@ class PickerFormTest(AppTestCase):
 
     # Formulario
 
-    def test_form_shows_search_when_connected(self):
+    def manual_field(self, html):
+        """El <input name="spotify_uri"> con su etiqueta y su texto de ayuda."""
+        match = re.search(r'<div class="field spotify-link-field">.*?</div>', html, re.S)
+        self.assertIsNotNone(match)
+        return match.group(0)
+
+    def test_form_shows_link_field_and_search_when_connected(self):
         html = self.client.get("/alarms/new").get_data(as_text=True)
         self.assertIn("Contenido de Spotify", html)
-        self.assertIn('id="spotify_search"', html)
+        field = self.manual_field(html)
+        self.assertIn("Pega un enlace de Spotify", field)
+        self.assertIn('placeholder="Pega un enlace de Spotify (playlist, álbum o canción)"', field)
+        self.assertIn("Admite playlists, álbumes y canciones de Spotify", field)
+        self.assertIn('name="spotify_uri"', field)
+        # Enlace manual primero y a la vista; después "o" y el buscador.
+        self.assertNotIn("<details", html)
+        self.assertNotIn("Introducir enlace manualmente", html)
+        self.assertLess(html.index('name="spotify_uri"'), html.index('class="or-divider"'))
+        self.assertLess(html.index('class="or-divider"'), html.index('id="spotify_search"'))
+        self.assertIn("Buscar en Spotify", html)
         self.assertIn('data-search-url="/spotify/search"', html)
         self.assertIn('data-lookup-url="/spotify/lookup"', html)
         self.assertIn('data-connected="true"', html)
-        self.assertIn("Buscar canción, álbum o playlist", html)
-        self.assertIn("Introducir enlace manualmente", html)
-        self.assertIn('name="spotify_uri"', html)
-        self.assertNotIn("Conecta Spotify para buscar", html)
+        self.assertNotIn("Conecta Spotify para usar el buscador", html)
         # El cuadro de búsqueda no manda nada al servidor (no tiene name).
         self.assertIsNone(re.search(r'<input id="spotify_search"[^>]*\bname=', html))
-        # Manual cerrado: el buscador es lo principal.
-        self.assertRegex(html, r'<details class="manual-link" data-manual\s*>')
         self.spotify.search.assert_not_called()
+
+    def test_link_field_always_visible(self):
+        self.post(spotify_uri=PLAYLIST_URI)
+        self.post(**self.selected())
+        pages = [self.client.get("/alarms/new"), self.client.get("/alarms/1/edit"),
+                 self.client.get("/alarms/2/edit"), self.post(spotify_uri="mal")]
+        self.spotify.is_connected.return_value = False
+        pages.append(self.client.get("/alarms/new"))
+        for number, resp in enumerate(pages):
+            with self.subTest(page=number):
+                html = resp.get_data(as_text=True)
+                field = self.manual_field(html)
+                self.assertNotRegex(field, r"\bhidden\b")
+                self.assertNotIn("<details", html)
+                self.assertIn("Pega un enlace de Spotify (playlist, álbum o canción)", field)
 
     def test_form_without_spotify_linked(self):
         self.spotify.is_connected.return_value = False
         html = self.client.get("/alarms/new").get_data(as_text=True)
-        self.assertIn("Conecta Spotify para buscar música desde Groove.", html)
+        text = " ".join(html.split())
+        self.assertIn("Conecta Spotify para usar el buscador. También puedes pegar un enlace "
+                      "directamente.", text)
         self.assertIn('href="/spotify/"', html)
         self.assertNotIn('id="spotify_search"', html)
         self.assertIn('data-connected="false"', html)
-        # La entrada manual sigue disponible (y abierta).
-        self.assertRegex(html, r'<details class="manual-link" data-manual\s*open>')
-        self.assertIn('name="spotify_uri"', html)
+        # El aviso se ve sin JS (la sección no está oculta) y el enlace manual sigue.
+        self.assertRegex(html, r'data-search-section\s*>')
+        self.assertIn('name="spotify_uri"', self.manual_field(html))
+        resp = self.post(spotify_uri=f"https://open.spotify.com/playlist/{PLAYLIST_ID}")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(self.rows()[0]["spotify_uri"], PLAYLIST_URI)
 
     def test_form_survives_spotify_state_errors(self):
         self.spotify.is_connected.side_effect = RuntimeError("bd bloqueada")
@@ -639,6 +754,90 @@ class PickerFormTest(AppTestCase):
         self.assertIn("Playlist · Spotify", self.edit_html(alarm_id))
 
     # Enlace manual
+
+    def test_manual_links_for_each_type(self):
+        cases = [
+            (f"https://open.spotify.com/playlist/{PLAYLIST_ID}?si=abc", PLAYLIST_URI),
+            (f"https://open.spotify.com/album/{ALBUM_ID}", ALBUM_URI),
+            (f"https://open.spotify.com/track/{TRACK_ID}?si=1&context=x", TRACK_URI),
+            (PLAYLIST_URI, PLAYLIST_URI),
+            (ALBUM_URI, ALBUM_URI),
+            (TRACK_URI, TRACK_URI),
+            (f"  http://open.spotify.com/intl-es/track/{TRACK_ID}/  ", TRACK_URI),
+        ]
+        for text, uri in cases:
+            with self.subTest(text=text):
+                resp = self.post(spotify_uri=text)
+                self.assertEqual(resp.status_code, 302)
+                row = self.rows()[-1]
+                self.assertEqual((row["source"], row["spotify_uri"], row["spotify_name"]),
+                                 ("spotify", uri, None))
+
+    def test_manual_links_play_exactly_that_content(self):
+        self.select_device()
+        playback = self.app.extensions["playback"]
+        for number, uri in enumerate((TRACK_URI, ALBUM_URI, PLAYLIST_URI)):
+            with self.subTest(uri=uri):
+                self.spotify.reset_mock()
+                self.post(name=f"A{number}", spotify_uri=webify(uri))
+                playback.start(self.rows()[-1], manual=True)
+                playback.stop()
+                self.spotify.play.assert_called_once_with("dev", uri=uri)
+                # Álbum/playlist: se pide el nº de pistas (inicio aleatorio); canción: no.
+                asked = mock.call.get_track_count(uri) in self.spotify.method_calls
+                self.assertEqual(asked, uri != TRACK_URI)
+        self.local.play.assert_not_called()
+
+    def test_invalid_and_unsupported_links_rejected(self):
+        for bad in ("https://open.spotify.com/playlist/", "open.spotify.com/album/x",
+                    f"https://open.spotify.com/artist/{TRACK_ID}",
+                    f"https://open.spotify.com/episode/{TRACK_ID}",
+                    f"https://open.spotify.com/show/{TRACK_ID}",
+                    f"spotify:artist:{TRACK_ID}", f"spotify:user:spotify:playlist:{PLAYLIST_ID}",
+                    f"https://spotify.link/{TRACK_ID}", "Daft Punk"):
+            with self.subTest(bad=bad):
+                resp = self.post(spotify_uri=bad)
+                self.assertEqual(resp.status_code, 400)
+                self.assertIn("Pega una URL de open.spotify.com", resp.get_data(as_text=True))
+        self.assertEqual(self.rows(), [])
+
+    def test_search_selection_with_web_url_in_link_field(self):
+        # El JS escribe en el campo el enlace open.spotify.com del resultado.
+        url = f"https://open.spotify.com/album/{ALBUM_ID}"
+        self.post(**self.selected(uri=url, spotify_meta_uri=ALBUM_URI))
+        row = self.rows()[0]
+        self.assertEqual((row["spotify_uri"], row["spotify_name"]), (ALBUM_URI, "Discovery"))
+
+    def test_select_then_paste_other_link_drops_old_metadata(self):
+        self.post(**self.selected())  # «Discovery» elegido con el buscador
+        alarm_id = self.rows()[0]["id"]
+        self.assertEqual(self.rows()[0]["spotify_name"], "Discovery")
+        # Luego se pega otra URL y llega la metadata vieja en los ocultos.
+        self.post(f"/alarms/{alarm_id}/edit",
+                  **self.selected(uri=f"https://open.spotify.com/playlist/{PLAYLIST_ID}",
+                                  spotify_meta_uri=ALBUM_URI))
+        row = self.rows()[0]
+        self.assertEqual((row["spotify_uri"], row["spotify_name"], row["spotify_subtitle"]),
+                         (PLAYLIST_URI, None, None))
+        html = self.edit_html(alarm_id)
+        self.assertNotIn("Discovery", html)
+        self.assertIn("Playlist de Spotify", html)
+
+    def test_search_403_keeps_manual_link_working(self):
+        self.spotify.search.side_effect = SpotifyForbiddenError(
+            "403", 403, api_message="Active premium subscription required for the owner of the app")
+        with self.assertLogs(self.app.logger, "WARNING"):
+            resp, data = self.get_json("/spotify/search?q=daft")
+        self.assertEqual((resp.status_code, data["error"], data["search_available"]),
+                         (403, "app_access", False))
+        self.assertEqual(data["message"], "La búsqueda de Spotify no está disponible. "
+                                          "Puedes pegar un enlace de Spotify arriba.")
+        # El formulario sigue igual y se puede guardar con un enlace.
+        html = self.client.get("/alarms/new").get_data(as_text=True)
+        self.assertIn('name="spotify_uri"', self.manual_field(html))
+        resp = self.post(spotify_uri=f"https://open.spotify.com/playlist/{PLAYLIST_ID}")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(self.rows()[0]["spotify_uri"], PLAYLIST_URI)
 
     def test_manual_url_still_works(self):
         url = f"https://open.spotify.com/intl-es/album/{ALBUM_ID}?si=abc"
@@ -798,6 +997,19 @@ class PickerScriptTest(unittest.TestCase):
 
     def test_results_are_rendered_as_text(self):
         self.assertNotRegex(self.source, r"\.innerHTML|\.outerHTML|insertAdjacentHTML")
+
+    def test_link_formats_match_the_server_parser(self):
+        # El JS reconoce los mismos tipos que parse_spotify_uri para comparar URIs.
+        self.assertIn("spotify:(track|album|playlist):([A-Za-z0-9]{22})", self.source)
+        self.assertIn(r"(track|album|playlist)\/([A-Za-z0-9]{22})", self.source)
+
+    def test_permanent_search_errors_stop_searching(self):
+        self.assertIn("search_available === false", self.source)
+        self.assertIn("input.disabled = true", self.source)
+
+    def test_manual_link_wins_over_old_metadata(self):
+        self.assertIn('uriInput.addEventListener("input", onManualEdit)', self.source)
+        self.assertIn("setMeta(null)", self.source)
 
     def test_enter_does_not_submit_the_alarm_form(self):
         self.assertIn('event.key !== "Enter"', self.source)

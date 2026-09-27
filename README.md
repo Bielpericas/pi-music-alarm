@@ -485,23 +485,59 @@ Si algo falla, la página muestra el motivo: 403 = sin Premium o usuario fuera d
 ### Alarmas con Spotify
 
 Al crear o editar una alarma, en **Sonido** elige **Sonido local** o **Spotify**. Con Spotify, en
-**Contenido de Spotify** puedes buscar o pegar un enlace. Se guarda siempre como URI.
+**Contenido de Spotify** eliges qué suena. Se guarda siempre como URI.
+
+Hay dos formas igual de válidas, y las dos acaban en el mismo URI:
+
+1. **Pegar un enlace** (siempre visible). En Spotify: Compartir → Copiar enlace, y pegarlo en
+   *Pega un enlace de Spotify (playlist, álbum o canción)*. Funciona sin Spotify vinculado, sin
+   buscador y sin JavaScript: es el método de siempre.
+2. **Buscar en Spotify** (debajo, tras un separador «o»). Una comodidad que depende de que la API
+   de Spotify permita la búsqueda; nunca hace falta para crear una alarma.
+
+#### Enlace manual
+
+Acepta exactamente los mismos formatos que antes, para canciones, álbumes y playlists:
+
+- `https://open.spotify.com/playlist/...`, `.../album/...`, `.../track/...` (con o sin `?si=...`,
+  con o sin `intl-xx/`);
+- `spotify:playlist:...`, `spotify:album:...`, `spotify:track:...`.
+
+Cualquier otro tipo (artista, episodio, podcast...) o texto se rechaza al guardar.
 
 #### Buscador integrado
 
-Con Spotify vinculado (página **Spotify** → **Conectar Spotify**), escribe en *Buscar canción, álbum o
-playlist…*. Groove busca a la vez **canciones, álbumes y playlists** (5 de cada, `GET /v1/search`) y
-los muestra agrupados, con portada si Spotify la da y un enlace para abrir cada resultado en
-Spotify. Al tocar uno queda seleccionado en una tarjeta (p. ej. *✓ Discovery · Álbum · Daft Punk*)
-con **Cambiar** para buscar otro; no hace falta copiar ninguna URI.
+Con Spotify vinculado (página **Spotify** → **Conectar Spotify**), escribe en *Buscar en Spotify*.
+Groove busca a la vez **canciones, álbumes y playlists** (5 de cada, `GET /v1/search`) y los muestra
+agrupados, con portada si Spotify la da y un enlace para abrir cada resultado en Spotify. Al tocar
+uno queda seleccionado en una tarjeta (p. ej. *✓ Discovery · Álbum · Daft Punk*) y su enlace se
+escribe en el campo de arriba; no hace falta copiar ninguna URI.
+
+Enlace y buscador comparten la selección: **el último que cambias manda**. Si eliges un resultado y
+luego pegas otro enlace, el nombre del resultado anterior se descarta (en el navegador y, de nuevo,
+en el servidor, que solo guarda un nombre si corresponde a ese mismo URI).
 
 - Solo busca a partir de 2 caracteres y espera ~400 ms a que dejes de escribir; las búsquedas
   antiguas se cancelan y las repetidas salen de una pequeña caché del navegador.
 - Si Spotify responde 429, el buscador se pausa el tiempo que pida (`Retry-After`) sin reintentar;
-  eso **no** frena a las alarmas. Timeout de 6 s. Los errores se muestran con un mensaje corto.
-- Sin Spotify vinculado, en lugar del buscador aparece *Conecta Spotify para buscar música desde
-  Groove* con un enlace a la página Spotify.
+  eso **no** frena a las alarmas. Timeout de 6 s.
+- Sin Spotify vinculado se ve *Conecta Spotify para usar el buscador. También puedes pegar un enlace
+  directamente.*
 - El buscador usa el mismo OAuth y refresh de tokens que el resto de Groove (no hay otro login).
+
+**Si la búsqueda no está permitida (403).** Spotify puede negar `/v1/search` a una app o cuenta
+aunque el resto funcione (p. ej. apps en modo desarrollo cuyo propietario no tiene Premium, o
+usuarios fuera de *User Management*). Groove distingue:
+
+| Caso | Mensaje |
+|---|---|
+| Faltan scopes (Spotify lo dice, o la autorización guardada no tiene los que pide Groove) | *Vuelve a vincular Spotify para activar la búsqueda.* + enlace a Spotify |
+| Sesión caducada o revocada (401 tras renovar una vez) | igual que el anterior |
+| La app/cuenta no tiene acceso al endpoint, u otro 403 | *La búsqueda de Spotify no está disponible. Puedes pegar un enlace de Spotify arriba.* |
+
+En todos los casos el buscador se desactiva en esa página (no insiste ni entra en bucles de
+refresh) y el enlace manual sigue funcionando. El motivo que da Spotify (`error.message`, sin
+tokens) queda en el log de Groove para diagnosticarlo.
 
 Por dentro, el navegador llama a dos endpoints JSON internos (solo lectura):
 `GET /spotify/search?q=...` y `GET /spotify/lookup?uri=...` (metadata de un URI ya guardado).
@@ -514,13 +550,7 @@ Devuelven cada elemento normalizado así (sin tokens ni el JSON de Spotify):
 
 `subtitle` son los artistas (canción y álbum) o el propietario (playlist); `image_url` puede ser
 `null`. Las portadas se cargan directamente desde Spotify (no se descargan ni se cachean en la Pi).
-
-#### Enlace manual
-
-**Introducir enlace manualmente** sigue aceptando exactamente lo de antes: la URL
-(`https://open.spotify.com/playlist/...`, con o sin `?si=...` o `intl-xx/`) o la URI
-(`spotify:playlist:...`) de una canción, un álbum o una playlist. Funciona también sin Spotify
-vinculado y sin JavaScript.
+Los errores llevan `search_available: false` cuando reintentar no sirve.
 
 #### Nombre guardado y alarmas antiguas
 
@@ -530,8 +560,8 @@ del URI. El servidor **valida el URI con el mismo parser de siempre** (solo trac
 limpia y recorta los textos y los descarta si no corresponden a ese URI. La reproducción usa
 **solo el URI**: manipular el nombre desde el navegador no cambia lo que suena.
 
-Las alarmas creadas antes (solo URI) siguen funcionando igual. Al editarlas se muestra el URI y
-Groove intenta obtener el nombre desde Spotify; si lo consigue, se guarda al pulsar Guardar. Si
+Las alarmas creadas antes (solo URI) siguen funcionando igual y no hace falta volver a guardarlas.
+Al editarlas se muestra el URI y su tipo, y Groove intenta obtener el nombre desde Spotify; si lo consigue, se guarda al pulsar Guardar. Si
 Spotify no está disponible, se queda el URI tal cual: la alarma nunca se invalida ni se modifica por
 no poder leer su nombre.
 

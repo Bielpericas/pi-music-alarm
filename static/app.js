@@ -33,22 +33,29 @@ document.addEventListener("submit", function (event) {
   update();
 })();
 
-// Formulario de alarma: buscador de Spotify. Elegir un resultado solo rellena
-// spotify_uri (y un nombre para mostrar); el servidor valida el URI al guardar.
-// Sin JavaScript queda el enlace manual. Los resultados se pintan con
-// textContent (nunca como HTML) y las portadas son las URLs de Spotify.
+// Formulario de alarma: contenido de Spotify. Dos formas igual de válidas que
+// acaban en el mismo campo spotify_uri (el servidor lo valida al guardar):
+//   1. pegar un enlace (siempre visible, funciona sin JS y sin buscador);
+//   2. buscar en Spotify (comodidad; si la API no lo permite, se avisa y el
+//      enlace manual sigue funcionando).
+// La metadata (nombre/subtítulo) solo acompaña al URI del que viene: si el
+// enlace cambia a otro contenido, se descarta. Todo se pinta con textContent.
 (function () {
   var picker = document.querySelector("[data-spotify-picker]");
-  if (!picker || !window.fetch) return;
+  if (!picker) return;
   var MIN_CHARS = 2;
   var DEBOUNCE_MS = 400;
   var MAX_CACHE = 20;
   var GROUPS = [["tracks", "Canciones"], ["albums", "Álbumes"], ["playlists", "Playlists"]];
   var KINDS = { track: "Canción", album: "Álbum", playlist: "Playlist" };
+  // Mismos formatos que parse_spotify_uri (spotify_client.py).
+  var URI_RE = /^spotify:(track|album|playlist):([A-Za-z0-9]{22})$/;
+  var URL_RE = /^https?:\/\/open\.spotify\.com\/(?:intl-[a-z]{2}(?:-[a-z]{2})?\/)?(track|album|playlist)\/([A-Za-z0-9]{22})\/?(?:[?#].*)?$/i;
 
   var connected = picker.getAttribute("data-connected") === "true";
   var searchUrl = picker.getAttribute("data-search-url");
   var lookupUrl = picker.getAttribute("data-lookup-url");
+  var spotifyPage = picker.getAttribute("data-spotify-url");
   var uriInput = document.getElementById("spotify_uri");
   var metaName = picker.querySelector('input[name="spotify_name"]');
   var metaSub = picker.querySelector('input[name="spotify_subtitle"]');
@@ -57,38 +64,24 @@ document.addEventListener("submit", function (event) {
   var cardName = picker.querySelector("[data-selection-name]");
   var cardMeta = picker.querySelector("[data-selection-meta]");
   var cardLink = picker.querySelector("[data-selection-link]");
-  var changeBtn = picker.querySelector("[data-selection-change]");
-  var manual = picker.querySelector("[data-manual]");
-  var search = picker.querySelector("[data-search]");
+  var section = picker.querySelector("[data-search-section]");
   var input = document.getElementById("spotify_search");
   var status = picker.querySelector("[data-search-status]");
   var results = picker.querySelector("[data-search-results]");
   var attribution = picker.querySelector("[data-search-attribution]");
   var template = picker.querySelector("[data-result-template]");
-  if (!uriInput || !card) return;
+  if (!uriInput || !card || !metaUri) return;
 
-  var timer = null;
-  var controller = null;
-  var seq = 0;            // solo cuenta la respuesta de la última búsqueda
-  var blockedUntil = 0;   // 429: no se vuelve a llamar hasta entonces
-  var cache = {};
-  var cacheKeys = [];
-
-  function isSpotifyLink(url) {
-    return typeof url === "string" && url.indexOf("https://open.spotify.com/") === 0;
+  // "spotify:<tipo>:<id>" a partir de un enlace o URI, o null si no vale.
+  function canonical(text) {
+    var value = (text || "").trim();
+    var match = URI_RE.exec(value) || URL_RE.exec(value);
+    return match ? "spotify:" + match[1].toLowerCase() + ":" + match[2] : null;
   }
 
-  function describe(item) {
-    var kind = KINDS[item.type] || "Contenido";
-    return item.subtitle ? kind + " · " + item.subtitle : kind + " de Spotify";
-  }
-
-  function showCard(item) {
-    cardName.textContent = item.name;
-    cardName.classList.remove("is-uri");
-    cardMeta.textContent = describe(item);
-    if (isSpotifyLink(item.external_url)) cardLink.href = item.external_url;
-    card.hidden = false;
+  function webUrl(uri) {
+    var parts = uri.split(":");
+    return "https://open.spotify.com/" + parts[1] + "/" + parts[2];
   }
 
   function setMeta(item) {
@@ -97,29 +90,97 @@ document.addEventListener("submit", function (event) {
     metaUri.value = item ? item.uri : "";
   }
 
-  function showSearch(show) {
-    if (!search) return;
-    search.hidden = !show;
-    if (changeBtn) changeBtn.hidden = show;
+  // Tarjeta de la selección actual: con nombre si hay metadata; si no, el URI
+  // y el tipo que se deducen del propio enlace.
+  function showCard(item) {
+    var kind = KINDS[item.type] || "Contenido";
+    cardName.textContent = item.name || item.uri;
+    cardName.classList.toggle("is-uri", !item.name);
+    cardMeta.textContent = item.name && item.subtitle ? kind + " · " + item.subtitle
+                                                      : kind + " de Spotify";
+    cardLink.href = webUrl(item.uri);
+    card.hidden = false;
   }
 
-  function select(item) {
-    uriInput.value = item.uri;
-    setMeta(item);
-    showCard(item);
-    showSearch(false);
-    if (manual) manual.open = false;
-    if (changeBtn) changeBtn.focus();
+  function showUriOnly(uri) {
+    showCard({ uri: uri, type: uri.split(":")[1] });
   }
 
-  function setStatus(text, isError) {
+  // Metadata de un URI (alarma antigua o enlace pegado). Si falla, se queda
+  // el URI: la alarma se guarda igual.
+  function lookup(uri) {
+    if (!connected || !window.fetch) return;
+    fetch(lookupUrl + "?uri=" + encodeURIComponent(uri), {
+      credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" }
+    })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (body) {
+        if (!body || !body.ok || !body.item) return;
+        if (canonical(uriInput.value) !== uri) return;  // el enlace ya cambió
+        var item = { uri: uri, type: body.item.type, name: body.item.name,
+                     subtitle: body.item.subtitle };
+        setMeta(item);
+        showCard(item);
+      })
+      .catch(function () {});
+  }
+
+  // 1. Enlace manual: el último enlace escrito manda. La metadata de antes solo
+  // se conserva si sigue siendo el mismo contenido.
+  function onManualEdit() {
+    var uri = canonical(uriInput.value);
+    if (uri && uri === canonical(metaUri.value)) return;
+    setMeta(null);
+    if (uri) showUriOnly(uri);
+    else card.hidden = true;
+  }
+  uriInput.addEventListener("input", onManualEdit);
+  uriInput.addEventListener("change", function () {
+    var uri = canonical(uriInput.value);
+    if (uri && !metaUri.value) lookup(uri);
+  });
+
+  var initial = canonical(uriInput.value);
+  if (initial && !metaUri.value) lookup(initial);
+
+  // 2. Buscador (solo con Spotify vinculado y fetch disponible).
+  if (!connected || !section || !input || !template || !window.fetch) return;
+  section.hidden = false;
+
+  var timer = null;
+  var controller = null;
+  var seq = 0;            // solo cuenta la respuesta de la última búsqueda
+  var blockedUntil = 0;   // 429: no se vuelve a llamar hasta entonces
+  var disabled = false;   // error permanente (403, sin vincular...): no se insiste
+  var cache = {};
+  var cacheKeys = [];
+
+  function setStatus(text, isError, reconnect) {
     status.textContent = text || "";
     status.classList.toggle("is-error", !!isError);
+    if (reconnect && spotifyPage) {
+      var link = document.createElement("a");
+      link.href = spotifyPage;
+      link.textContent = "Ir a Spotify";
+      status.appendChild(document.createTextNode(" "));
+      status.appendChild(link);
+    }
   }
 
   function clearResults() {
     while (results.firstChild) results.removeChild(results.firstChild);
     if (attribution) attribution.hidden = true;
+  }
+
+  function select(item) {
+    // El campo manual muestra el enlace elegido: los dos métodos comparten valor.
+    uriInput.value = item.external_url || webUrl(item.uri);
+    setMeta(item);
+    showCard(item);
+    clearResults();
+    setStatus("");
+    input.value = "";
+    card.scrollIntoView({ block: "nearest" });
   }
 
   function row(item) {
@@ -145,12 +206,8 @@ document.addEventListener("submit", function (event) {
     }
     li.querySelector("[data-pick]").addEventListener("click", function () { select(item); });
     var open = li.querySelector("[data-open]");
-    if (isSpotifyLink(item.external_url)) {
-      open.href = item.external_url;
-      open.setAttribute("aria-label", "Abrir «" + item.name + "» en Spotify");
-    } else {
-      open.remove();
-    }
+    open.href = webUrl(item.uri);
+    open.setAttribute("aria-label", "Abrir «" + item.name + "» en Spotify");
     return li;
   }
 
@@ -158,21 +215,23 @@ document.addEventListener("submit", function (event) {
     clearResults();
     var total = 0;
     GROUPS.forEach(function (group) {
-      var items = (data && data[group[0]]) || [];
+      var items = ((data && data[group[0]]) || []).filter(function (item) {
+        return item && canonical(item.uri) === item.uri && item.name;
+      });
       if (!items.length) return;
       total += items.length;
-      var section = document.createElement("section");
+      var block = document.createElement("section");
       var title = document.createElement("h3");
       title.className = "search-group-title";
       title.textContent = group[1];
       var list = document.createElement("ul");
       list.className = "search-list";
       items.forEach(function (item) { list.appendChild(row(item)); });
-      section.appendChild(title);
-      section.appendChild(list);
-      results.appendChild(section);
+      block.appendChild(title);
+      block.appendChild(list);
+      results.appendChild(block);
     });
-    setStatus(total ? "" : "Sin resultados.");
+    setStatus(total ? "" : "Sin resultados. También puedes pegar un enlace de Spotify arriba.");
     if (attribution) attribution.hidden = !total;
   }
 
@@ -193,14 +252,24 @@ document.addEventListener("submit", function (event) {
     controller = null;
   }
 
+  // Error que no se arregla reintentando: se deja de buscar en esta página.
+  function disable(message, reconnect) {
+    disabled = true;
+    cancel();
+    clearResults();
+    input.disabled = true;
+    setStatus(message, true, reconnect);
+  }
+
   function run() {
     var query = currentQuery();
-    if (query.length < MIN_CHARS) return;
+    if (disabled || query.length < MIN_CHARS) return;
     if (cache[query]) { render(cache[query]); return; }
     var wait = Math.ceil((blockedUntil - Date.now()) / 1000);
     if (wait > 0) {
       clearResults();
-      setStatus("Spotify pide esperar " + wait + " s antes de volver a buscar.", true);
+      setStatus("Spotify pide esperar " + wait + " s antes de volver a buscar. " +
+                "Puedes pegar un enlace de Spotify arriba.", true);
       timer = setTimeout(run, wait * 1000);  // un único intento cuando termine la espera
       return;
     }
@@ -220,89 +289,50 @@ document.addEventListener("submit", function (event) {
       .then(function (res) {
         if (mine !== seq) return;
         controller = null;
-        if (res.status === 200 && res.body.ok) {
-          remember(query, res.body.results);
-          render(res.body.results);
+        var body = res.body;
+        if (res.status === 200 && body.ok) {
+          remember(query, body.results);
+          render(body.results);
+          return;
+        }
+        var message = body.message ||
+          "La búsqueda de Spotify no está disponible. Puedes pegar un enlace de Spotify arriba.";
+        if (body.search_available === false) {
+          disable(message, body.action === "reconnect");
           return;
         }
         if (res.status === 429) {
-          blockedUntil = Date.now() + Math.max(1, res.body.retry_after || 5) * 1000;
+          blockedUntil = Date.now() + Math.max(1, body.retry_after || 5) * 1000;
         }
         clearResults();
-        setStatus(res.body.message || "No se pudo buscar en Spotify.", true);
+        setStatus(message, true);
       })
       .catch(function (err) {
         if (mine !== seq || (err && err.name === "AbortError")) return;
         clearResults();
-        setStatus("No se pudo conectar con Groove para buscar.", true);
+        setStatus("No se pudo conectar con Groove para buscar. Puedes pegar un enlace de " +
+                  "Spotify arriba.", true);
       });
   }
 
-  // Metadata de un URI ya elegido (alarmas antiguas o enlace pegado a mano).
-  // Si falla, se deja tal cual: la alarma se guarda con su URI igualmente.
-  function lookup(value) {
-    fetch(lookupUrl + "?uri=" + encodeURIComponent(value), {
-      credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" }
-    })
-      .then(function (resp) { return resp.ok ? resp.json() : null; })
-      .then(function (body) {
-        if (!body || !body.ok || !body.item) return;
-        if (uriInput.value.trim() !== value) return;  // el usuario ya lo cambió
-        setMeta(body.item);
-        showCard(body.item);
-        showSearch(false);
-      })
-      .catch(function () {});
-  }
-
-  if (changeBtn) {
-    changeBtn.hidden = false;
-    changeBtn.addEventListener("click", function () {
-      if (search) {
-        showSearch(true);
-        input.focus();
-      } else if (manual) {
-        manual.open = true;
-        uriInput.focus();
-      }
-    });
-  }
-
-  // Enlace manual: al escribir, la metadata anterior deja de valer.
-  uriInput.addEventListener("input", function () {
-    setMeta(null);
-    card.hidden = true;
-    if (search) showSearch(true);
-    else if (changeBtn) changeBtn.hidden = true;
+  input.addEventListener("input", function () {
+    if (disabled) return;
+    cancel();
+    var query = currentQuery();
+    if (query.length < MIN_CHARS) {
+      clearResults();
+      setStatus(query ? "Escribe al menos " + MIN_CHARS + " caracteres." : "");
+      return;
+    }
+    timer = setTimeout(run, DEBOUNCE_MS);
   });
-  uriInput.addEventListener("change", function () {
-    var value = uriInput.value.trim();
-    if (value && connected) lookup(value);
+  // Enter busca ya, pero nunca envía el formulario de la alarma.
+  input.addEventListener("keydown", function (event) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    clearTimeout(timer);
+    run();
   });
-
-  if (search && input && template) {
-    showSearch(card.hidden);
-    input.addEventListener("input", function () {
-      cancel();
-      var query = currentQuery();
-      if (query.length < MIN_CHARS) {
-        clearResults();
-        setStatus(query ? "Escribe al menos " + MIN_CHARS + " caracteres." : "");
-        return;
-      }
-      timer = setTimeout(run, DEBOUNCE_MS);
-    });
-    // Enter busca ya, pero nunca envía el formulario de la alarma.
-    input.addEventListener("keydown", function (event) {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      clearTimeout(timer);
-      run();
-    });
-  }
-
-  var initial = uriInput.value.trim();
-  if (connected && initial && !metaUri.value && !card.hidden) lookup(initial);
 })();
 
 // Formulario de alarma: porcentaje de los deslizadores y resumen del fade-in.

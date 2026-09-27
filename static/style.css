@@ -493,7 +493,7 @@ input::placeholder { color: #7480a3; }
   background: var(--dusk);
   border: 1px solid rgba(30, 215, 96, 0.45); border-radius: var(--r-card);
 }
-.spotify-selection[hidden], .spotify-search[hidden], .spotify-selection .btn[hidden] { display: none; }
+.spotify-selection[hidden], .spotify-search-section[hidden] { display: none; }
 .spotify-selection-check { display: flex; flex: none; color: var(--spotify); }
 .spotify-selection-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .spotify-selection-name { font-weight: 700; overflow-wrap: anywhere; }
@@ -505,6 +505,13 @@ input::placeholder { color: #7480a3; }
 }
 .spotify-open .icon, .spotify-attribution .icon { width: 16px; height: 16px; vertical-align: -3px; }
 
+/* "── o ──" entre el enlace manual y el buscador. */
+.spotify-search-section { display: flex; flex-direction: column; gap: 12px; }
+.or-divider {
+  display: flex; align-items: center; gap: 12px;
+  color: var(--muted); font-size: 0.85rem; font-weight: 600;
+}
+.or-divider::before, .or-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 .spotify-search { display: flex; flex-direction: column; gap: 10px; }
 .search-box { position: relative; }
 .search-box .icon {
@@ -512,6 +519,7 @@ input::placeholder { color: #7480a3; }
   color: var(--muted); pointer-events: none;
 }
 .search-box input { padding-left: 46px; }
+.search-box input:disabled { opacity: 0.55; cursor: not-allowed; }
 .search-status:empty { display: none; }
 .search-status.is-error { color: var(--danger); }
 .search-results { display: flex; flex-direction: column; gap: 14px; }
@@ -550,12 +558,6 @@ input::placeholder { color: #7480a3; }
 }
 .search-result-open .icon { width: 18px; height: 18px; }
 .spotify-attribution { font-size: 0.8rem; }
-
-.manual-link summary {
-  display: flex; align-items: center; min-height: 44px;
-  cursor: pointer; color: var(--muted); font-size: 0.875rem; font-weight: 600;
-}
-.manual-link[open] summary { margin-bottom: 4px; }
 
 input[type="range"] { width: 100%; height: 44px; margin: 0; accent-color: var(--sun); background: none; }
 

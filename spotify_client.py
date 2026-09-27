@@ -184,6 +184,18 @@ class SpotifyClient:
     def disconnect(self):
         self.tokens.clear()
 
+    def missing_scopes(self):
+        """Scopes que pide Groove y que no tiene la autorización guardada.
+
+        Si no está vacío, hay que volver a vincular Spotify (cambió SCOPES). Una
+        respuesta sin `scope` (tokens antiguos) no cuenta como falta.
+        """
+        tokens = self.tokens.load()
+        granted = (tokens or {}).get("scope") or ""
+        if not granted.strip():
+            return set()
+        return set(SCOPES) - set(granted.split())
+
     # OAuth
 
     def get_authorize_url(self, state):

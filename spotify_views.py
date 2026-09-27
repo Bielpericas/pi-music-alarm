@@ -170,8 +170,26 @@ def pause():
 # --- Buscador del formulario de alarmas (JSON para fetch) -------------------
 #
 # Solo lectura y aislado: cualquier fallo se convierte en un JSON de error y
-# nunca toca el scheduler, las alarmas ni el reproductor. No se registran ni la
-# búsqueda ni tokens/cabeceras: solo el tipo de error.
+# nunca toca el scheduler, las alarmas ni el reproductor. El buscador es una
+# comodidad: el enlace manual del formulario funciona siempre, así que los
+# mensajes lo recuerdan. No se registran ni la búsqueda ni tokens/cabeceras.
+#
+# `search_available: false` indica un error que no se arregla reintentando
+# (sin vincular, sin permiso, hay que volver a vincular...): el navegador deja
+# de buscar en esa página. `action: "reconnect"` añade el enlace a Spotify.
+
+MANUAL_HINT = "Puedes pegar un enlace de Spotify arriba."
+SEARCH_UNAVAILABLE = f"La búsqueda de Spotify no está disponible. {MANUAL_HINT}"
+RECONNECT = f"Vuelve a vincular Spotify para activar la búsqueda. {MANUAL_HINT}"
+NOT_CONNECTED = "Conecta Spotify para usar el buscador. También puedes pegar un enlace directamente."
+
+# Textos de Spotify en un 403 que indican permisos/scopes de la autorización.
+_SCOPE_HINTS = ("scope",)
+# ...o que la app/cuenta no tiene acceso a la API (modo desarrollo, allowlist,
+# Premium del propietario de la app...). Volver a vincular no lo arregla.
+_ACCESS_HINTS = ("not registered", "developer dashboard", "user management", "premium",
+                 "not available", "not allowed", "restricted")
+
 
 def _json_response(payload, status=200, retry_after=None):
     resp = jsonify(payload)
@@ -182,42 +200,68 @@ def _json_response(payload, status=200, retry_after=None):
     return resp
 
 
-def _json_error(code, message, status, retry_after=None):
-    payload = {"ok": False, "error": code, "message": message}
+def _json_error(code, message, status, retry_after=None, available=True, action=None):
+    payload = {"ok": False, "error": code, "message": message, "search_available": available}
     if retry_after:
         payload["retry_after"] = retry_after
+    if action:
+        payload["action"] = action
     return _json_response(payload, status, retry_after)
+
+
+def forbidden_kind(exc, spotify):
+    """Clasifica un 403 de Spotify.
+
+    - "reauth": falta un scope en la autorización guardada o Spotify lo dice.
+    - "app_access": la app o la cuenta no tienen acceso a ese endpoint.
+    - "forbidden": otro 403 (no se sabe más; no se culpa a la cuenta).
+    """
+    text = f"{exc.api_message or ''} {exc.reason or ''}".lower()
+    try:
+        missing = spotify.missing_scopes()
+    except Exception:  # noqa: BLE001 - solo es para elegir el mensaje
+        missing = set()
+    if missing or any(hint in text for hint in _SCOPE_HINTS):
+        return "reauth"
+    if any(hint in text for hint in _ACCESS_HINTS):
+        return "app_access"
+    return "forbidden"
 
 
 def _ui_error(exc, action):
     """SpotifyError (o fallo inesperado) -> respuesta JSON con mensaje amable."""
+    if isinstance(exc, SpotifyForbiddenError):
+        kind = forbidden_kind(exc, client())
+        # Motivo de Spotify (sin tokens) para poder diagnosticarlo en el log.
+        current_app.logger.warning("Spotify (%s): 403 %s · reason=%s · message=%s", action,
+                                   kind, exc.reason, exc.api_message)
+        if kind == "reauth":
+            return _json_error("reauth", RECONNECT, 403, available=False, action="reconnect")
+        return _json_error(kind, SEARCH_UNAVAILABLE, 403, available=False)
     current_app.logger.warning("Spotify (%s): %s", action, type(exc).__name__)
     if isinstance(exc, SpotifyNotConfiguredError):
-        return _json_error("not_configured", "Spotify no está configurado en Groove.", 409)
+        return _json_error("not_configured", SEARCH_UNAVAILABLE, 409, available=False)
     if isinstance(exc, SpotifyAuthError):
-        return _json_error("auth", "La sesión de Spotify ha caducado. Vuelve a conectar "
-                           "Spotify.", 401)
-    if isinstance(exc, SpotifyForbiddenError):
-        return _json_error("forbidden", "Spotify no permite esta búsqueda con tu cuenta.", 403)
+        # El cliente ya renovó el token una vez: no se insiste (sin bucles).
+        return _json_error("reauth", RECONNECT, 401, available=False, action="reconnect")
     if isinstance(exc, SpotifyRateLimitError):
         return _json_error("rate_limited", f"Spotify pide esperar {exc.retry_after} s antes "
-                           "de volver a buscar.", 429, exc.retry_after)
+                           f"de volver a buscar. {MANUAL_HINT}", 429, exc.retry_after)
     if isinstance(exc, SpotifyNotFoundError):
         return _json_error("not_found", "Spotify no encuentra ese contenido.", 404)
     if isinstance(exc, SpotifyConnectionError):
-        return _json_error("unavailable", "No se pudo conectar con Spotify. Comprueba la "
-                           "conexión a Internet.", 503)
-    return _json_error("spotify_error", "Spotify no respondió como se esperaba. Inténtalo "
-                       "de nuevo.", 502)
+        return _json_error("unavailable", f"No se pudo conectar con Spotify. {MANUAL_HINT}", 503)
+    return _json_error("spotify_error", f"Spotify no respondió como se esperaba. {MANUAL_HINT}",
+                       502)
 
 
 def _require_linked():
     spotify = client()
     if not spotify.is_configured:
-        return _json_error("not_configured", "Spotify no está configurado en Groove.", 409)
+        return _json_error("not_configured", SEARCH_UNAVAILABLE, 409, available=False)
     if not spotify.is_connected():
-        return _json_error("not_connected", "Conecta Spotify para buscar música desde "
-                           "Groove.", 409)
+        return _json_error("not_connected", NOT_CONNECTED, 409, available=False,
+                           action="reconnect")
     return None
 
 
