@@ -20,6 +20,11 @@ Reglas:
   fade-in (fade.py) lo sube hasta el final. STOP, snooze o una alarma nueva
   cancelan el fade en curso; cada vez que la alarma empieza a sonar, empieza
   un fade nuevo desde el volumen inicial.
+- Bluetooth (bluetooth_audio.py): ALARMA > SPOTIFY > BLUETOOTH. Antes de
+  sonar se para el reproductor Bluetooth (libera la tarjeta USB) y sigue
+  parado mientras suene la alarma, también con el WAV de respaldo o si otra
+  alarma la sustituye. STOP y +10 MIN lo devuelven; al volver a sonar un
+  snooze se para otra vez. Un fallo aquí nunca impide que suene la alarma.
 """
 import logging
 import threading
@@ -122,9 +127,11 @@ class StopResult(NamedTuple):
 
 class AlarmPlaybackManager:
     def __init__(self, player, spotify=None, schedule_once=None,
-                 clock=datetime.now, snooze_minutes=SNOOZE_MINUTES, fader=None):
+                 clock=datetime.now, snooze_minutes=SNOOZE_MINUTES, fader=None,
+                 bluetooth=None):
         self.player = player                  # AudioPlayer local (WAV)
         self.spotify = spotify                # SpotifyAlarmPlayer o None
+        self.bluetooth = bluetooth            # BluetoothAudio o None (pause/resume)
         self.schedule_once = schedule_once or timer_schedule_once
         self.fader = fader or start_fade      # fader(set_volume, plan) -> objeto con cancel()
         self._fade = None                     # fade-in en curso (solo uno a la vez)
@@ -172,6 +179,8 @@ class AlarmPlaybackManager:
             if alarm["source"] == "spotify":
                 # Visible (con STOP) mientras se busca el dispositivo y se reintenta.
                 self._active = ActiveAlarm(alarm, started_at, "connecting", manual, snoozes)
+            # Con la tarjeta libre antes de reproducir (Spotify, WAV o respaldo).
+            self._pause_bluetooth()
             initial_volume, plan = volume_settings(alarm)
             try:
                 via = play_alarm_sound(alarm, self.player, self.spotify,
@@ -205,6 +214,7 @@ class AlarmPlaybackManager:
             else:
                 silenced = True  # "cancelled": no llegó a sonar nada
             logger.info("ALARMA DETENIDA: %s", active.alarm["name"])
+            self._resume_bluetooth()  # también en +10 MIN: Bluetooth libre hasta que vuelva
             return StopResult(active, silenced)
 
     def snooze(self, minutes=None):
@@ -298,6 +308,22 @@ class AlarmPlaybackManager:
         self._pending_view = tuple(
             sorted((p for p, _ in self._pending.values()), key=lambda p: p.run_at)
         )
+
+    def _pause_bluetooth(self):
+        if self.bluetooth is None:
+            return
+        try:
+            self.bluetooth.pause()
+        except Exception:
+            logger.exception("No se pudo pausar Bluetooth; la alarma suena igualmente")
+
+    def _resume_bluetooth(self):
+        if self.bluetooth is None:
+            return
+        try:
+            self.bluetooth.resume()
+        except Exception:
+            logger.exception("No se pudo devolver Bluetooth tras la alarma")
 
     def _stop_local(self):
         if self.player is None:

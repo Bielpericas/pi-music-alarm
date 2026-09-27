@@ -147,6 +147,8 @@ nano .env
 - `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET`: los mismos que en el PC.
 - `SPOTIFY_REDIRECT_URI`: déjala en `http://127.0.0.1:5000/spotify/callback` (ver paso 9).
 - `ALSA_DEVICE`: solo si el sonido no sale por la tarjeta buena (ver paso 6).
+- `BLUETOOTH_SERVICE`: servicio del reproductor Bluetooth (por defecto `bluealsa-aplay`; `none` para
+  no gestionarlo). Ver paso 10.
 - `HOST` / `PORT`: por defecto `0.0.0.0` y `5000`, accesible desde la red local.
 
 ```bash
@@ -261,6 +263,76 @@ antes. Luego ya puedes cerrar el túnel y usar la Pi con su IP normal.
 Recuerda que una alarma Spotify suena en un **dispositivo Spotify Connect** (móvil, altavoz, PC con
 Spotify abierto). La Pi todavía no es uno de ellos: eso llegará con librespot. Si no hay
 dispositivo disponible, suena el WAV por la tarjeta de la Pi.
+
+### 10. Bluetooth (BlueALSA) y alarmas
+
+Si usas la Pi también como **altavoz Bluetooth**, `bluealsa-aplay` reproduce lo que llega del móvil
+por la **misma tarjeta USB** que el WAV de las alarmas y Raspotify. Una tarjeta USB con `plughw:`
+solo la puede abrir un programa a la vez, así que Groove **para `bluealsa-aplay` antes de cada alarma**
+y lo vuelve a arrancar después (ver [Bluetooth y alarmas](#bluetooth-y-alarmas)).
+
+**1. Paquetes** (si aún no los tienes; en Bookworm/Trixie):
+
+```bash
+sudo apt install -y bluez bluez-alsa-utils polkitd
+```
+
+`bluez-alsa-utils` trae `bluealsa` y `bluealsa-aplay` con sus servicios systemd. El emparejamiento
+del móvil se hace una vez con `bluetoothctl` (Groove no lo toca).
+
+**2. Hacer que `bluealsa-aplay` use la tarjeta USB.** Crea un *override* del servicio:
+
+```bash
+sudo systemctl edit bluealsa-aplay
+```
+
+y escribe (la primera línea `ExecStart=` vacía borra la original):
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/bluealsa-aplay -S -D plughw:CARD=Device,DEV=0 --single-audio
+```
+
+- `-D plughw:CARD=Device,DEV=0`: la misma tarjeta que `ALSA_DEVICE` (mírala con `aplay -L`).
+- `-S`: registra en syslog/journal.
+- `--single-audio`: solo un dispositivo Bluetooth suena a la vez.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now bluealsa bluealsa-aplay
+systemctl status bluealsa-aplay        # active (running)
+```
+
+**3. Permiso mínimo para Groove (sin sudo).** El servicio `pi-music-alarm` corre con tu usuario y con
+`NoNewPrivileges=true`, así que no puede (ni debe) usar `sudo`. En su lugar, una regla de **polkit**
+permite a tu usuario **solo `start` y `stop` de `bluealsa-aplay.service`**: nada de otras unidades, ni
+`enable`/`disable`, ni BlueZ.
+
+```bash
+bash deploy/install-bluetooth-permission.sh
+```
+
+El script rellena `deploy/pi-music-alarm-bluetooth.rules.template` con tu usuario y la unidad
+(`BLUETOOTH_SERVICE` si la cambias: `BLUETOOTH_SERVICE=otro bash deploy/...`) y la instala en
+`/etc/polkit-1/rules.d/50-pi-music-alarm-bluetooth.rules`. Necesita polkit con reglas JavaScript
+(`pkaction --version` ≥ 0.106; Bookworm trae la 122). Compruébalo **sin sudo** (no debe pedir
+contraseña):
+
+```bash
+systemctl --no-ask-password stop bluealsa-aplay && systemctl --no-ask-password start bluealsa-aplay
+```
+
+Y que la regla no concede nada más (esto **debe fallar** con "Access denied"):
+
+```bash
+systemctl --no-ask-password restart bluealsa        # otra unidad: denegado
+systemctl --no-ask-password disable bluealsa-aplay  # otro verbo: denegado
+```
+
+**No uses** una regla de `sudoers` ni añadas tu usuario a grupos amplios: no hace falta.
+
+Para quitar el permiso: `sudo rm /etc/polkit-1/rules.d/50-pi-music-alarm-bluetooth.rules`.
 
 ## Cómo funciona el scheduler
 
@@ -477,6 +549,33 @@ Reglas:
   pierde (mejor eso que sonar a una hora incorrecta). Las alarmas normales siguen guardadas en SQLite.
 - El WAV local suena una vez (no se repite en bucle); el recuadro sigue visible hasta STOP o +10 MIN.
 
+### Bluetooth y alarmas
+
+Prioridad: **ALARMA > SPOTIFY > BLUETOOTH**. La alarma siempre gana a Bluetooth:
+
+| Momento | Bluetooth (`bluealsa-aplay`) |
+|---|---|
+| Empieza a sonar una alarma (a su hora, **Probar** o al volver un snooze) | se **para** antes de reproducir (Spotify, WAV o WAV de respaldo) |
+| Suena el WAV de respaldo porque Spotify falló | sigue parado |
+| Otra alarma sustituye a la que sonaba | sigue parado (no se arranca entre medias) |
+| **STOP** | se vuelve a **arrancar** |
+| **+10 MIN** | se vuelve a arrancar durante los 10 minutos; al volver a sonar se para otra vez |
+| Borrar la alarma que suena | como STOP |
+
+- Solo se vuelve a arrancar si lo paró Groove: si lo tenías parado, sigue parado.
+- Solo se para y arranca el **reproductor**: el móvil sigue emparejado y conectado; nunca se
+  desconecta, desempareja ni cambia la visibilidad.
+- Si `systemctl` falla (sin permiso, sin BlueALSA, tiempo agotado), se registra en el log y **la
+  alarma suena igual**.
+- En el log: `Bluetooth pausado por alarma (bluealsa-aplay.service detenido)` y `Bluetooth disponible
+  de nuevo (bluealsa-aplay.service arrancado)`.
+- Si Groove se reinicia **mientras suena** una alarma, no sabe que había parado Bluetooth: arráncalo a
+  mano con `sudo systemctl start bluealsa-aplay` (o reinicia la Pi).
+- En Windows (desarrollo) y en los tests no se ejecuta `systemctl`.
+
+Código: `bluetooth_audio.py` es el único módulo que llama a `systemctl` (`pause()` / `resume()`);
+`AlarmPlaybackManager` lo llama al empezar a sonar y en STOP.
+
 Código: `playback.py` (`AlarmPlaybackManager`) guarda el estado y hace start / stop / snooze con un lock
 (los hilos de waitress y de APScheduler no se pisan). El scheduler solo llama a `manager.start(alarm)`;
 las vistas solo llaman a `stop()` / `snooze()`. El snooze es un job de APScheduler en memoria.
@@ -519,9 +618,10 @@ spotify_client.py   # todo el HTTP con Spotify: OAuth, refresh, errores
 spotify_views.py    # rutas /spotify/...
 spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> reproducir
 playback.py         # alarma sonando: estado, STOP y snooze
+bluetooth_audio.py  # para / arranca bluealsa-aplay alrededor de las alarmas (systemctl)
 fade.py             # fade-in de volumen (Spotify)
 serve.py            # arranque de producción (waitress, red local)
-deploy/             # plantilla systemd + install-service.sh
+deploy/             # plantilla systemd + install-service.sh; regla polkit de Bluetooth
 .env.example        # plantilla de configuración (copiar a .env)
 schema.sql          # tablas "alarms", "spotify_auth" y "settings"
 sounds/             # alarm.wav (no se sube a git)

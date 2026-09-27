@@ -1,0 +1,21 @@
+// Regla de polkit para pi-music-alarm (Groove).
+//
+// No la copies tal cual: deploy/install-bluetooth-permission.sh sustituye
+// @USER@ y @UNIT@ y la instala en
+// /etc/polkit-1/rules.d/50-pi-music-alarm-bluetooth.rules.
+//
+// Permite al usuario del servicio SOLO arrancar y parar el reproductor
+// Bluetooth (bluealsa-aplay) para que las alarmas liberen la tarjeta de
+// sonido. No concede sudo, ni otras unidades, ni enable/disable/restart,
+// ni nada de BlueZ (emparejar, confiar, visibilidad).
+
+polkit.addRule(function (action, subject) {
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        subject.user === "@USER@" &&
+        action.lookup("unit") === "@UNIT@") {
+        var verb = action.lookup("verb");
+        if (verb === "start" || verb === "stop") {
+            return polkit.Result.YES;
+        }
+    }
+});

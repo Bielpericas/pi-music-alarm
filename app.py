@@ -13,6 +13,7 @@ import scheduler
 import spotify_views
 import ui
 from audio_player import create_player
+from bluetooth_audio import DEFAULT_SERVICE as DEFAULT_BLUETOOTH_SERVICE, NoBluetooth, create_bluetooth
 from playback import AlarmPlaybackManager
 from spotify_client import create_spotify_client, parse_spotify_uri
 from spotify_player import RETRY_DELAYS, SpotifyAlarmPlayer
@@ -129,8 +130,8 @@ def format_days(days_csv):
     return ", ".join(DAY_NAMES[d] for d in days)
 
 
-def create_app(config=None, player=None, spotify=None):
-    """Crea la app. `player` y `spotify` permiten inyectar dobles (mocks) en tests."""
+def create_app(config=None, player=None, spotify=None, bluetooth=None):
+    """Crea la app. `player`, `spotify` y `bluetooth` permiten inyectar dobles (mocks) en tests."""
     app = Flask(__name__, instance_relative_config=True)
     app.config.update(
         SECRET_KEY=os.environ.get("SECRET_KEY", "dev"),
@@ -140,6 +141,9 @@ def create_app(config=None, player=None, spotify=None):
         AUDIO_BACKEND=os.environ.get("AUDIO_BACKEND", "local"),
         SOUND_PATH=os.environ.get("ALARM_SOUND", str(DEFAULT_SOUND)),
         ALSA_DEVICE=os.environ.get("ALSA_DEVICE", ""),  # solo Linux (aplay -D)
+        # Servicio systemd del reproductor Bluetooth que se para mientras suena
+        # una alarma ("none" = no gestionar Bluetooth). Ver bluetooth_audio.py.
+        BLUETOOTH_SERVICE=os.environ.get("BLUETOOTH_SERVICE", DEFAULT_BLUETOOTH_SERVICE),
         SPOTIFY_CLIENT_ID=os.environ.get("SPOTIFY_CLIENT_ID", ""),
         SPOTIFY_CLIENT_SECRET=os.environ.get("SPOTIFY_CLIENT_SECRET", ""),
         # Nombre del dispositivo de las alarmas si aún no se ha elegido ninguno
@@ -157,6 +161,9 @@ def create_app(config=None, player=None, spotify=None):
     app.jinja_env.filters["format_days"] = format_days
     app.extensions["audio_player"] = player or create_player(app.config)
     app.extensions["spotify"] = spotify or create_spotify_client(app.config)
+    # En tests nunca se toca systemd salvo que se inyecte un doble.
+    app.extensions["bluetooth"] = bluetooth or (
+        NoBluetooth() if app.testing else create_bluetooth(app.config))
     app.extensions["spotify_alarm"] = SpotifyAlarmPlayer(
         app.extensions["spotify"], app.config["DATABASE"],
         preferred_name=app.config["SPOTIFY_DEVICE_NAME"],
@@ -169,7 +176,8 @@ def create_app(config=None, player=None, spotify=None):
     app.register_blueprint(spotify_views.bp)
     # Estado de la alarma que suena (STOP / +10 MIN). Ver playback.py.
     playback = AlarmPlaybackManager(
-        app.extensions["audio_player"], app.extensions["spotify_alarm"]
+        app.extensions["audio_player"], app.extensions["spotify_alarm"],
+        bluetooth=app.extensions["bluetooth"],
     )
     app.extensions["playback"] = playback
 
