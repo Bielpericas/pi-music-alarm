@@ -1,7 +1,7 @@
 {% from "_icons.html" import icon, logo %}
 {% set section = "spotify" if request.blueprint == "spotify" else "alarms" %}
 <!doctype html>
-<html lang="es">
+<html lang="es" class="{% block page_class %}page-default{% endblock %}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">

@@ -67,10 +67,14 @@ document.addEventListener("submit", function (event) {
 })();
 
 // Menús de acciones (<details>): uno abierto a la vez; se cierran con Escape
-// o tocando fuera.
+// o tocando fuera. Se abren hacia abajo salvo que no quepan: entonces hacia
+// arriba. Mientras hay uno abierto, el botón flotante se oculta (body.menu-open).
 (function () {
   var menus = document.querySelectorAll("details.menu");
   if (!menus.length) return;
+  var GAP = 8;  // margen mínimo entre el menú y lo que lo taparía
+  var header = document.querySelector(".app-header");
+  var bottomNav = document.querySelector(".nav-bottom");
 
   function closeAll(except) {
     for (var i = 0; i < menus.length; i++) {
@@ -78,17 +82,85 @@ document.addEventListener("submit", function (event) {
     }
   }
 
+  function openMenu() {
+    return document.querySelector("details.menu[open]");
+  }
+
+  // Zona realmente visible: entre la cabecera sticky y la nav inferior (o el
+  // borde del viewport visual, que se encoge con el teclado del móvil).
+  function visibleArea() {
+    var top = 0;
+    var bottom = window.visualViewport
+      ? window.visualViewport.offsetTop + window.visualViewport.height
+      : window.innerHeight;
+    if (header) top = Math.max(top, header.getBoundingClientRect().bottom);
+    if (bottomNav && getComputedStyle(bottomNav).display !== "none") {
+      bottom = Math.min(bottom, bottomNav.getBoundingClientRect().top);
+    }
+    return { top: top, bottom: bottom };
+  }
+
+  // Decide la dirección con el panel ya visible. Todo ocurre en la misma
+  // tarea que abre el menú o que hace scroll, así que no se pinta un salto.
+  function place(menu) {
+    var panel = menu.querySelector(".menu-panel");
+    if (!panel) return;
+    var trigger = menu.querySelector("summary").getBoundingClientRect();
+    var needed = panel.offsetHeight + GAP;
+    var area = visibleArea();
+    var below = area.bottom - trigger.bottom;
+    var above = trigger.top - area.top;
+    // Abajo si cabe; si no, arriba cuando allí cabe o hay más sitio.
+    var up = below < needed && (above >= needed || above > below);
+    menu.classList.toggle("menu-up", up);
+  }
+
+  function sync() {
+    var menu = openMenu();
+    document.body.classList.toggle("menu-open", !!menu);
+    if (menu) place(menu);
+  }
+
   for (var i = 0; i < menus.length; i++) {
+    menus[i].querySelector("summary").addEventListener("click", function (event) {
+      // Se abre a mano para colocar el panel antes de que se pinte.
+      var menu = event.currentTarget.parentNode;
+      event.preventDefault();
+      menu.open = !menu.open;
+      if (menu.open) {
+        closeAll(menu);
+        sync();
+      }
+    });
     menus[i].addEventListener("toggle", function (event) {
       if (event.target.open) closeAll(event.target);
+      else event.target.classList.remove("menu-up");
+      sync();
     });
   }
+
+  var pending = false;
+  function onViewportChange() {
+    if (pending || !openMenu()) return;
+    pending = true;
+    window.requestAnimationFrame(function () {
+      pending = false;
+      sync();
+    });
+  }
+  window.addEventListener("scroll", onViewportChange, { passive: true });
+  window.addEventListener("resize", onViewportChange);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", onViewportChange);
+    window.visualViewport.addEventListener("scroll", onViewportChange);
+  }
+
   document.addEventListener("click", function (event) {
     if (!event.target.closest("details.menu")) closeAll(null);
   });
   document.addEventListener("keydown", function (event) {
     if (event.key !== "Escape") return;
-    var open = document.querySelector("details.menu[open]");
+    var open = openMenu();
     if (open) {
       open.open = false;
       open.querySelector("summary").focus();

@@ -52,10 +52,6 @@
           </p>
         </div>
       </div>
-      {% if selected_name %}
-        <p class="hint">Si «{{ selected_name }}» cambia de ID (por ejemplo, al reiniciar Raspotify), las
-          alarmas lo buscan por su nombre y reintentan unos segundos.</p>
-      {% endif %}
       <div class="test-controls" aria-label="Probar el dispositivo">
         <form method="post" action="{{ url_for('spotify.transfer') }}">
           <button class="btn btn-quiet btn-small" type="submit">{{ icon("transfer") }}<span>Transferir</span></button>
@@ -67,6 +63,13 @@
           <button class="btn btn-quiet btn-small" type="submit">{{ icon("pause") }}<span>Pause</span></button>
         </form>
       </div>
+      {% if selected_name %}
+        <details class="tech">
+          <summary>Detalles técnicos</summary>
+          <p>Si «{{ selected_name }}» cambia de ID (por ejemplo, al reiniciar Raspotify), las
+            alarmas lo buscan por su nombre y reintentan unos segundos.</p>
+        </details>
+      {% endif %}
     {% else %}
       <p class="target-name">Elige dónde suenan las alarmas</p>
       <p class="muted">Selecciona un dispositivo de la lista. En la Raspberry, Raspotify aparece como

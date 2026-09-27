@@ -29,14 +29,25 @@
 
   --page: 640px;
   --nav-h: 64px;
+  --header-h: 65px;      /* cabecera sticky (44px + 2 × 10px + borde) */
+  --actions-h: 72px;     /* barra Cancelar / Guardar del formulario */
+  --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --bottom-chrome: calc(var(--nav-h) + var(--safe-bottom)); /* lo que tapa abajo: nav inferior */
 }
 
 /* --- Base --- */
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+/* scroll-padding: al enfocar un campo o saltar a un ancla, el navegador lo deja
+   visible por debajo de la cabecera y por encima de lo fijo de abajo. */
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-top: calc(var(--header-h) + var(--safe-top) + 8px);
+  scroll-padding-bottom: calc(var(--bottom-chrome) + 8px);
+}
+html.page-form { scroll-padding-bottom: calc(var(--bottom-chrome) + var(--actions-h) + 8px); }
 
 body {
   margin: 0;
@@ -46,8 +57,10 @@ body {
   line-height: 1.5;
   background: var(--night);
   color: var(--ink);
-  padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + 88px); /* nav inferior + botón flotante */
+  padding-bottom: calc(var(--bottom-chrome) + 88px); /* nav inferior + botón flotante */
 }
+/* El formulario no tiene botón flotante: su barra de acciones va en el flujo. */
+.page-form body { padding-bottom: calc(var(--bottom-chrome) + 16px); }
 
 h1, h2, p { margin: 0; }
 h1 { font-size: 1.75rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.01em; }
@@ -83,7 +96,7 @@ code { font-size: 0.9em; overflow-wrap: anywhere; color: var(--ink); }
 .app-header {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; gap: 16px;
-  padding: calc(10px + env(safe-area-inset-top, 0px)) 16px 10px;
+  padding: calc(10px + var(--safe-top)) 16px 10px;
   background: rgba(15, 24, 48, 0.94);
   border-bottom: 1px solid var(--line);
 }
@@ -127,7 +140,9 @@ body.is-offline .status { color: var(--danger); }
 .nav-bottom a[aria-current="page"] .icon { color: var(--sun); }
 
 @media (min-width: 760px) {
+  :root { --bottom-chrome: var(--safe-bottom); } /* sin nav inferior */
   body { padding-bottom: 120px; }
+  .page-form body { padding-bottom: calc(24px + var(--safe-bottom)); }
   .nav-bottom { display: none; }
   .nav-top { display: flex; gap: 4px; }
   .nav-top a {
@@ -233,8 +248,14 @@ body.is-offline .status { color: var(--danger); }
   background: var(--sun); color: var(--sun-ink);
   font-weight: 750; text-decoration: none;
   box-shadow: 0 8px 24px rgba(4, 8, 20, 0.55);
+  transition: opacity 0.15s, visibility 0.15s;
 }
 @media (min-width: 760px) { .fab { bottom: 28px; } }
+/* Con un menú ⋯ abierto, el botón flotante se aparta (sin mover nada del layout).
+   app.js pone .menu-open; :has() lo cubre también sin JavaScript. Reglas separadas
+   para que un navegador sin :has() no descarte la primera. */
+body.menu-open .fab { visibility: hidden; opacity: 0; pointer-events: none; }
+body:has(details.menu[open]) .fab { visibility: hidden; opacity: 0; pointer-events: none; }
 
 /* --- Alarma sonando --- */
 
@@ -379,6 +400,8 @@ body.is-offline .status { color: var(--danger); }
   border-radius: var(--r-ctl);
   box-shadow: 0 14px 32px rgba(4, 8, 20, 0.6);
 }
+/* app.js lo abre hacia arriba si abajo no cabe (nav inferior, borde de pantalla). */
+.menu.menu-up .menu-panel { top: auto; bottom: calc(100% + 6px); }
 .menu-panel form { margin: 0; }
 .menu-item {
   display: flex; align-items: center; gap: 10px; width: 100%;
@@ -458,12 +481,15 @@ input::placeholder { color: #7480a3; }
 input[type="range"] { width: 100%; height: 44px; margin: 0; accent-color: var(--sun); background: none; }
 
 .form-actions {
-  position: sticky; bottom: calc(var(--nav-h) + var(--safe-bottom));
+  position: sticky; z-index: 5; bottom: var(--bottom-chrome);
   display: grid; grid-template-columns: 1fr 2fr; gap: 10px;
+  min-height: var(--actions-h);
   padding: 12px 0;
-  background: linear-gradient(180deg, rgba(15, 24, 48, 0), var(--night) 30%);
+  background: var(--night);
+  border-top: 1px solid var(--line);
 }
-@media (min-width: 760px) { .form-actions { bottom: 0; } }
+/* Sin nav inferior (escritorio), la barra respeta sola la zona segura. */
+@media (min-width: 760px) { .form-actions { padding-bottom: calc(12px + var(--safe-bottom)); bottom: 0; } }
 
 /* --- Spotify --- */
 

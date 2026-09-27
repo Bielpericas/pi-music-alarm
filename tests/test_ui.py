@@ -12,12 +12,15 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+CSS = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+APP_JS = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
 sys.path.insert(0, str(ROOT))
 
 import scheduler  # noqa: E402
 import ui  # noqa: E402
 from app import create_app  # noqa: E402
 from audio_player import AudioPlayer  # noqa: E402
+from playback import ActiveAlarm, PendingSnooze  # noqa: E402
 from spotify_client import SpotifyClient  # noqa: E402
 
 MONDAY_0700 = datetime(2026, 9, 28, 7, 0)  # lunes
@@ -26,6 +29,14 @@ MONDAY_0700 = datetime(2026, 9, 28, 7, 0)  # lunes
 def alarm(time="07:30", days="0,1,2,3,4", enabled=1, name="Trabajo"):
     return {"id": 1, "name": name, "time": time, "days": days, "enabled": enabled,
             "source": "local", "spotify_uri": None}
+
+
+def css_rule(selector):
+    """Cuerpo de la primera regla CSS cuyo selector es exactamente `selector`."""
+    match = re.search(r"(?:^|[}\s])" + re.escape(selector) + r"\s*\{([^}]*)\}", CSS, re.M)
+    if not match:
+        raise AssertionError(f"no hay regla CSS para {selector!r}")
+    return match.group(1)
 
 
 class NextAlarmTest(unittest.TestCase):
@@ -142,6 +153,49 @@ class UiRoutesTest(unittest.TestCase):
             self.assertIn(action, html)
         self.assertIn('class="fab" href="/alarms/new"', html)
 
+    def test_fab_hidden_while_a_menu_is_open(self):
+        # app.js marca body.menu-open; :has() cubre el caso sin JavaScript.
+        for selector in ("body.menu-open .fab", "body:has(details.menu[open]) .fab"):
+            with self.subTest(selector=selector):
+                rule = css_rule(selector)
+                self.assertIn("visibility: hidden", rule)
+                self.assertIn("pointer-events: none", rule)
+                self.assertNotIn("display", rule)  # sin saltos de layout
+        self.assertIn('classList.toggle("menu-open"', APP_JS)
+
+    def test_menu_opens_upwards_when_there_is_no_room_below(self):
+        rule = css_rule(".menu.menu-up .menu-panel")
+        self.assertIn("top: auto", rule)
+        self.assertIn("bottom: calc(100% + 6px)", rule)
+        # La dirección sale del espacio medido, no de la posición en la lista.
+        self.assertIn('classList.toggle("menu-up"', APP_JS)
+        self.assertIn("getBoundingClientRect", APP_JS)
+        self.assertNotIn("last-child", APP_JS + CSS)
+        for event in ('"scroll"', '"resize"', '"Escape"'):
+            self.assertIn(event, APP_JS)
+
+    def test_fab_hidden_while_an_alarm_is_ringing(self):
+        self.create()
+        playback = self.app.extensions["playback"]
+        playback._active = ActiveAlarm({"id": 1, "name": "Trabajo", "time": "07:30",
+                                        "source": "local", "spotify_uri": None},
+                                       datetime(2026, 9, 28, 7, 30), "local")
+        html = self.html()
+        self.assertIn(">STOP<", html)
+        self.assertIn("+10 MIN", html)
+        self.assertNotIn('class="fab"', html)
+        playback._active = None
+        self.assertIn('class="fab" href="/alarms/new"', self.html())
+
+    def test_fab_stays_with_only_a_pending_snooze(self):
+        self.create()
+        snooze = PendingSnooze({"id": 1, "name": "Trabajo", "time": "07:30", "source": "local",
+                                "spotify_uri": None}, datetime(2026, 9, 28, 7, 40), 1)
+        self.app.extensions["playback"]._pending_view = (snooze,)
+        html = self.html()
+        self.assertIn("Pospuesta hasta 07:40", html)
+        self.assertIn('class="fab" href="/alarms/new"', html)
+
     def test_empty_state_invites_to_create(self):
         html = self.html()
         self.assertIn("No hay alarmas todavía", html)
@@ -157,6 +211,24 @@ class UiRoutesTest(unittest.TestCase):
         self.assertIn('class="segmented"', html)
         self.assertIn("data-spotify-field", html)
         self.assertIn("Sube durante 5 minutos", html)
+
+    def test_form_leaves_room_for_the_actions_bar(self):
+        html = self.html("/alarms/new")
+        self.assertIn('<html lang="es" class="page-form">', html)
+        self.assertIn('class="page-default"', self.html("/"))
+        self.assertIn('class="form-actions"', html)
+        # Los campos enfocados quedan por encima de la barra y de la nav inferior.
+        self.assertIn("calc(var(--bottom-chrome) + var(--actions-h) + 8px)",
+                      css_rule("html.page-form"))
+        self.assertIn("var(--nav-h) + var(--safe-bottom)", css_rule(":root"))
+        self.assertIn("env(safe-area-inset-bottom", css_rule(":root"))
+        actions = css_rule(".form-actions")
+        self.assertIn("position: sticky", actions)
+        self.assertIn("bottom: var(--bottom-chrome)", actions)
+        self.assertIn("min-height: var(--actions-h)", actions)
+        self.assertIn("background: var(--night)", actions)  # opaca: no se transparenta
+        # Sin botón flotante en el formulario: el hueco inferior no es exagerado.
+        self.assertNotIn("88px", css_rule(".page-form body"))
 
     def test_form_still_works_without_js(self):
         # Las operaciones esenciales son formularios normales (POST + redirección).

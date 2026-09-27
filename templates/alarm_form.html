@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% set editing = alarm_id is not none %}
+{% block page_class %}page-form{% endblock %}
 {% block title %}{{ "Editar alarma" if editing else "Nueva alarma" }} · Groove{% endblock %}
 {% block content %}
 <div class="section-head">

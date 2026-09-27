@@ -146,6 +146,20 @@ class SpotifyViewsTest(unittest.TestCase):
         self.spotify.play.assert_called_once_with("movil")
         self.spotify.pause.assert_called_once_with("movil")
 
+    def test_id_change_explanation_lives_in_technical_details(self):
+        html = self.post("/spotify/device", device_id="movil", device_name="Mi móvil")
+        card = html[html.index('class="card target"'):html.index('class="devices"')]
+        main, _, details = card.partition('<details class="tech">')
+        self.assertIn("Dispositivo seleccionado: <strong>Mi móvil</strong>", main)
+        self.assertIn("disponible ahora", main)
+        for control in ("Transferir", "Play", "Pause"):
+            self.assertIn(control, main)
+        # La explicación técnica no está a la vista: se conserva en el desplegable.
+        self.assertNotIn("cambia de ID", main)
+        self.assertIn("<summary>Detalles técnicos</summary>", details)
+        self.assertIn("Si «Mi móvil» cambia de ID", details)
+        self.assertIn("reintentan unos segundos", details)
+
     def test_control_errors_are_flashed(self):
         self.post("/spotify/device", device_id="pc", device_name="Mi PC")
         cases = [

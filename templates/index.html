@@ -125,5 +125,8 @@
   </div>
 {% endif %}
 
-<a class="fab" href="{{ url_for('new_alarm') }}">{{ icon("plus") }}<span>Nueva alarma</span></a>
+{# Mientras suena una alarma, STOP y +10 MIN son lo único importante: sin botón flotante. #}
+{% if not active %}
+  <a class="fab" href="{{ url_for('new_alarm') }}">{{ icon("plus") }}<span>Nueva alarma</span></a>
+{% endif %}
 {% endblock %}
