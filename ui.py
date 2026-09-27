@@ -68,6 +68,13 @@ def sun_height(when, now):
     return round(max(0.0, min(1.0, 1 - remaining / 24)), 3)
 
 
+def duration_label(minutes):
+    """Texto del desplegable de duración máxima (0 = sin límite)."""
+    if minutes == 0:
+        return "Sin límite"
+    return f"{minutes} minutos"
+
+
 def fade_label(minutes):
     """Texto del desplegable de fade-in."""
     if minutes == 0:

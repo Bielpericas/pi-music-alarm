@@ -25,6 +25,13 @@ Reglas:
   parado mientras suene la alarma, también con el WAV de respaldo o si otra
   alarma la sustituye. STOP y +10 MIN lo devuelven; al volver a sonar un
   snooze se para otra vez. Un fallo aquí nunca impide que suene la alarma.
+- Auto-stop: si la alarma tiene `max_duration_minutes` (> 0), al empezar a
+  sonar se programa un job que la para por el mismo camino que STOP (fade,
+  Spotify/WAV, estado y Bluetooth). No es un snooze: no se reprograma nada.
+  STOP, +10 MIN y una alarma nueva cancelan el job; al volver de un snooze se
+  empieza un contador completo. Cada start() recibe un token nuevo y el job
+  solo actúa si su token es el de la alarma que suena: un job antiguo nunca
+  para una alarma posterior. Sin límite (0) no se programa nada.
 """
 import logging
 import threading
@@ -39,6 +46,8 @@ logger = logging.getLogger("alarms")
 SNOOZE_MINUTES = 10
 ALARM_FIELDS = ("id", "name", "time", "source", "spotify_uri")
 VOLUME_FIELDS = ("volume_start", "volume_end", "fade_minutes")  # opcionales
+DURATION_FIELD = "max_duration_minutes"  # opcional; 0 o ausente = sin límite
+OPTIONAL_FIELDS = VOLUME_FIELDS + (DURATION_FIELD,)
 
 
 def volume_settings(alarm):
@@ -142,6 +151,8 @@ class AlarmPlaybackManager:
         self._starting = None                 # Event del start en curso (para interrumpirlo)
         self._pending = {}                    # alarm_id -> (PendingSnooze, cancel)
         self._pending_view = ()
+        self._token = 0                       # sube en cada start(): identifica la reproducción
+        self._auto_stop = None                # cancel() del auto-stop pendiente
 
     # --- Estado (lectura sin lock: son referencias a objetos inmutables) ---
 
@@ -158,10 +169,13 @@ class AlarmPlaybackManager:
     def start(self, alarm, manual=False, snoozes=0):
         """Hace sonar `alarm`, sustituyendo a la que sonara. Devuelve cómo suena."""
         keys = set(alarm.keys())
-        alarm = {key: alarm[key] for key in ALARM_FIELDS + VOLUME_FIELDS
+        alarm = {key: alarm[key] for key in ALARM_FIELDS + OPTIONAL_FIELDS
                  if key in ALARM_FIELDS or key in keys}
         with self._lock:
             self._cancel_fade()  # el fade de la alarma anterior, si lo hubiera
+            self._cancel_auto_stop()  # el de la anterior: la nueva tiene el suyo
+            self._token += 1
+            token = self._token
             suffix = " (prueba manual)" if manual else " (pospuesta)" if snoozes else ""
             logger.info("ALARMA ACTIVADA: %s%s", alarm["name"], suffix)
 
@@ -196,26 +210,37 @@ class AlarmPlaybackManager:
             self._active = ActiveAlarm(alarm, started_at, via, manual, snoozes)
             if via == "spotify" and plan:
                 self._start_fade(plan)
+            if via != "cancelled":  # si no llegó a sonar, STOP ya viene de camino
+                self._schedule_auto_stop(alarm, started_at, token)
             return via
 
     def stop(self):
         """Para la alarma que suena. Devuelve StopResult, o None si no sonaba nada."""
         self._interrupt_start()
         with self._lock:
-            active = self._active
-            if active is None:
-                return None
-            self._active = None
-            self._cancel_fade()  # antes de pausar: que no suba el volumen tras STOP
-            if active.via == "spotify":
-                silenced = self._stop_spotify()
-            elif active.via in ("local", "fallback"):
-                silenced = self._stop_local()
-            else:
-                silenced = True  # "cancelled": no llegó a sonar nada
+            return self._finish()
+
+    def _finish(self, auto=False):
+        """STOP (o auto-stop): el único camino que termina una alarma. Con el lock."""
+        active = self._active
+        if active is None:
+            return None
+        self._active = None
+        self._cancel_auto_stop(log=not auto)
+        self._cancel_fade()  # antes de pausar: que no suba el volumen tras STOP
+        if active.via == "spotify":
+            silenced = self._stop_spotify()
+        elif active.via in ("local", "fallback"):
+            silenced = self._stop_local()
+        else:
+            silenced = True  # "cancelled": no llegó a sonar nada
+        if auto:
+            logger.info("ALARMA DETENIDA POR AUTO-STOP: %s (duración máxima: %s min)",
+                        active.alarm["name"], active.alarm.get(DURATION_FIELD))
+        else:
             logger.info("ALARMA DETENIDA: %s", active.alarm["name"])
-            self._resume_bluetooth()  # también en +10 MIN: Bluetooth libre hasta que vuelva
-            return StopResult(active, silenced)
+        self._resume_bluetooth()  # también en +10 MIN: Bluetooth libre hasta que vuelva
+        return StopResult(active, silenced)
 
     def snooze(self, minutes=None):
         """Para la alarma y la vuelve a disparar dentro de N minutos.
@@ -265,6 +290,43 @@ class AlarmPlaybackManager:
                 self.spotify.interrupt()
             except Exception:
                 logger.exception("No se pudo interrumpir la búsqueda del dispositivo")
+
+    def _schedule_auto_stop(self, alarm, started_at, token):
+        minutes = int(alarm.get(DURATION_FIELD) or 0)
+        if minutes <= 0:
+            logger.info("«%s» sin duración máxima: no se programa auto-stop", alarm["name"])
+            return
+        run_at = started_at + timedelta(minutes=minutes)
+        try:
+            self._auto_stop = self.schedule_once(run_at, lambda: self._fire_auto_stop(token))
+        except Exception:
+            logger.exception("No se pudo programar el auto-stop; la alarma sigue sonando")
+            self._auto_stop = None
+            return
+        logger.info("Auto-stop programado en %s min (a las %s) para «%s»",
+                    minutes, run_at.strftime("%H:%M"), alarm["name"])
+
+    def _fire_auto_stop(self, token):
+        """Job del auto-stop. Solo para la alarma si sigue siendo la misma reproducción."""
+        # Sin _interrupt_start(): si está arrancando otra alarma, un job viejo no
+        # debe cortarla. El lock espera a que termine y el token decide.
+        with self._lock:
+            if self._active is None or token != self._token:
+                logger.info("Auto-stop antiguo ignorado: ya no suena esa alarma")
+                return None
+            self._auto_stop = None  # ya se está ejecutando: no hay nada que cancelar
+            return self._finish(auto=True)
+
+    def _cancel_auto_stop(self, log=True):
+        cancel, self._auto_stop = self._auto_stop, None
+        if cancel is None:
+            return
+        try:
+            cancel()
+        except Exception:
+            pass  # el job ya se había ejecutado o no existe; el token lo neutraliza
+        if log:
+            logger.info("Auto-stop cancelado")
 
     def _start_fade(self, plan):
         try:

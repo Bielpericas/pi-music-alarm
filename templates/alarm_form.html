@@ -97,6 +97,16 @@
     </div>
   </fieldset>
 
+  <div class="field">
+    <label for="max_duration_minutes">Duración máxima</label>
+    <select id="max_duration_minutes" name="max_duration_minutes">
+      {% for minutes in duration_choices %}
+        <option value="{{ minutes }}" {% if minutes == data.max_duration_minutes %}selected{% endif %}>{{ minutes | duration_label }}</option>
+      {% endfor %}
+    </select>
+    <p class="hint">Si nadie pulsa STOP, la alarma se para sola pasado este tiempo.</p>
+  </div>
+
   <div class="form-actions">
     <a class="btn btn-quiet" href="{{ url_for('index') }}">Cancelar</a>
     <button class="btn btn-primary" type="submit">Guardar</button>

@@ -547,7 +547,27 @@ Reglas:
 - Si una alarma vuelve a sonar (o la borras) mientras estaba pospuesta, ese snooze se cancela.
 - **Los snoozes solo viven en memoria**: si la app o la Raspberry se reinician durante un snooze, se
   pierde (mejor eso que sonar a una hora incorrecta). Las alarmas normales siguen guardadas en SQLite.
-- El WAV local suena una vez (no se repite en bucle); el recuadro sigue visible hasta STOP o +10 MIN.
+- El WAV local suena una vez (no se repite en bucle); el recuadro sigue visible hasta STOP, +10 MIN o
+  el auto-stop.
+
+### Duración máxima (auto-stop)
+
+Cada alarma tiene una **Duración máxima** (formulario de crear/editar): **15, 30, 45 o 60 minutos**, o
+**Sin límite**. Por defecto, 30 minutos (también para las alarmas que ya existían).
+
+- Al empezar a sonar se programa el auto-stop (un job de APScheduler en memoria, como los snoozes).
+  Al llegar el límite, la alarma se para **igual que con STOP**: se cancela el fade, se pausa Spotify o
+  se para el WAV, desaparece el recuadro y Bluetooth vuelve a estar disponible.
+- No es un snooze: no vuelve a sonar ni cambia la programación de la alarma.
+- **STOP** antes del límite cancela el auto-stop. **+10 MIN** también, y al volver a sonar empieza un
+  contador **completo** desde cero. Si otra alarma sustituye a la que sonaba, manda el límite de la nueva.
+- **Sin límite** no programa nada: suena hasta STOP.
+- Si Groove se reinicia mientras suena una alarma, el auto-stop se pierde (como los snoozes).
+- En el log: `Auto-stop programado en 30 min (a las 08:00) para «…»`, `Auto-stop cancelado` y
+  `ALARMA DETENIDA POR AUTO-STOP: … (duración máxima: 30 min)`.
+- Para que un auto-stop antiguo nunca pare una alarma posterior, cada vez que empieza a sonar una alarma
+  recibe un número de reproducción nuevo; el job solo para la alarma si ese número sigue siendo el de la
+  que suena.
 
 ### Bluetooth y alarmas
 
@@ -635,7 +655,7 @@ instance/           # base de datos y log local (no se suben a git)
 
 Cada alarma guarda `name`, `time` (`HH:MM`), `days` (p. ej. `"0,2,4"`, donde 0 = lunes y vacío = una vez),
 `enabled`, `last_triggered`, `source` (`local` o `spotify`), `spotify_uri`,
-`volume_start`, `volume_end` y `fade_minutes`.
+`volume_start`, `volume_end`, `fade_minutes` y `max_duration_minutes` (auto-stop; 0 = sin límite).
 
 ## Próximos pasos
 

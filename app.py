@@ -25,6 +25,7 @@ MAX_NAME_LEN = 50
 SOURCES = ("local", "spotify")
 MAX_FADE_MINUTES = 30
 FADE_CHOICES = (0, 1, 2, 3, 5, 10, 15, 20, 30)  # opciones del desplegable
+DURATION_CHOICES = (15, 30, 45, 60, 0)  # duración máxima (auto-stop); 0 = sin límite
 
 
 def _int_field(form, key, default, low, high, label, errors):
@@ -87,11 +88,16 @@ def validate_alarm_form(form):
                               MAX_FADE_MINUTES, "La duración del fade-in", errors)
     if volume_start > volume_end:
         errors.append("El volumen inicial no puede ser mayor que el final.")
+    max_duration = _int_field(form, "max_duration_minutes", db.DEFAULT_MAX_DURATION, 0, 60,
+                              "La duración máxima", errors)
+    if max_duration not in DURATION_CHOICES:
+        errors.append("Elige una duración máxima de la lista.")
+        max_duration = db.DEFAULT_MAX_DURATION
 
     data = {"name": name, "time": time, "days": days,
             "source": source, "spotify_uri": spotify_uri,
             "volume_start": volume_start, "volume_end": volume_end,
-            "fade_minutes": fade_minutes}
+            "fade_minutes": fade_minutes, "max_duration_minutes": max_duration}
     return data, errors
 
 
@@ -172,6 +178,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
     app.jinja_env.filters["describe_source"] = describe_source
     app.jinja_env.filters["describe_volume"] = describe_volume
     app.jinja_env.filters["fade_label"] = ui.fade_label
+    app.jinja_env.filters["duration_label"] = ui.duration_label
     app.jinja_env.filters["selected_days"] = ui.selected_days
     app.register_blueprint(spotify_views.bp)
     # Estado de la alarma que suena (STOP / +10 MIN). Ver playback.py.
@@ -207,13 +214,13 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
     def render_form(data, errors=(), status=200, alarm_id=None):
         return render_template(
             "alarm_form.html", data=data, errors=errors, day_names=DAY_NAMES,
-            alarm_id=alarm_id, fade_choices=FADE_CHOICES,
+            alarm_id=alarm_id, fade_choices=FADE_CHOICES, duration_choices=DURATION_CHOICES,
         ), status
 
     def alarm_fields(data):
         return (data["name"], data["time"], data["days"], data["source"],
                 data["spotify_uri"], data["volume_start"], data["volume_end"],
-                data["fade_minutes"])
+                data["fade_minutes"], data["max_duration_minutes"])
 
     @app.get("/")
     def index():
@@ -262,7 +269,8 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
                             "source": "local", "spotify_uri": "",
                             "volume_start": db.DEFAULT_VOLUME_START,
                             "volume_end": db.DEFAULT_VOLUME_END,
-                            "fade_minutes": db.DEFAULT_FADE_MINUTES})
+                            "fade_minutes": db.DEFAULT_FADE_MINUTES,
+                            "max_duration_minutes": db.DEFAULT_MAX_DURATION})
 
     @app.route("/alarms/<int:alarm_id>/edit", methods=["GET", "POST"])
     def edit_alarm(alarm_id):
@@ -282,7 +290,9 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None):
                             "spotify_uri": alarm["spotify_uri"] or "",
                             "volume_start": alarm["volume_start"],
                             "volume_end": alarm["volume_end"],
-                            "fade_minutes": alarm["fade_minutes"]}, alarm_id=alarm_id)
+                            "fade_minutes": alarm["fade_minutes"],
+                            "max_duration_minutes": alarm["max_duration_minutes"]},
+                           alarm_id=alarm_id)
 
     def form_echo(data):
         """Si hay errores, se vuelve a mostrar lo que escribió el usuario."""
