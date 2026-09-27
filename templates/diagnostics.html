@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% set labels = {"ok": "Correcto", "warning": "Aviso", "error": "Problema"} %}
+{% block title %}Diagnóstico · Groove{% endblock %}
+{% block content %}
+<div class="section-head">
+  <h1>Diagnóstico</h1>
+  <form method="post" action="{{ url_for('diagnostics.check') }}">
+    <button class="btn btn-quiet btn-small" type="submit">{{ icon("refresh") }}<span>Comprobar ahora</span></button>
+  </form>
+</div>
+
+<section class="card diag-summary diag-{{ report.status }}" aria-labelledby="diag-summary-title">
+  <h2 id="diag-summary-title" class="diag-summary-title">
+    <span class="diag-dot" aria-hidden="true"></span>
+    {% if errors %}{{ errors }} {{ "componente con problemas" if errors == 1 else "componentes con problemas" }}
+    {% elif warnings %}{{ warnings }} {{ "aviso" if warnings == 1 else "avisos" }}
+    {% else %}Todo en orden{% endif %}
+  </h2>
+  <p class="muted">Última comprobación: <time datetime="{{ report.checked_at.isoformat(timespec='seconds') }}">{{ report.checked_at.strftime("%d/%m %H:%M:%S") }}</time>
+    · {{ report.trigger }}</p>
+  <p class="hint">Solo se observa: nada se arranca, se para ni se repara, y no suena nada.</p>
+</section>
+
+<ul class="check-list" aria-label="Componentes">
+  {% for check in report.results %}
+    <li class="card check diag-{{ check.status }}">
+      <h2 class="check-name">{{ check.name }}</h2>
+      <p class="check-state">
+        <span class="diag-dot" aria-hidden="true"></span>
+        <span class="visually-hidden">{{ labels[check.status] }}:</span>
+        <span>{{ check.summary }}</span>
+        {% if check.status != "ok" %}<span class="badge check-badge">{{ labels[check.status] }}</span>{% endif %}
+      </p>
+      {% for line in check.details %}
+        <p class="check-detail">{{ line }}</p>
+      {% endfor %}
+    </li>
+  {% endfor %}
+</ul>
+{% endblock %}

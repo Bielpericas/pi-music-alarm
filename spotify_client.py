@@ -195,8 +195,9 @@ class SpotifyClient:
 
     # API del reproductor
 
-    def get_devices(self):
-        data = self._api("GET", "/me/player/devices")
+    def get_devices(self, timeout=None):
+        """Dispositivos visibles. `timeout` (s) acorta la espera (Diagnóstico)."""
+        data = self._api("GET", "/me/player/devices", timeout=timeout)
         return (data or {}).get("devices", [])
 
     def transfer_playback(self, device_id, play=False):
@@ -318,7 +319,7 @@ class SpotifyClient:
             )
         raise SpotifyError(f"Error pidiendo token a Spotify: {error}", status)
 
-    def _api(self, method, path, params=None, body=None):
+    def _api(self, method, path, params=None, body=None, timeout=None):
         url = API_BASE + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -331,7 +332,7 @@ class SpotifyClient:
             if body is not None:
                 headers["Content-Type"] = "application/json"
             status, resp_headers, content = self._send(
-                method, url, headers, payload if method != "GET" else None
+                method, url, headers, payload if method != "GET" else None, timeout
             )
 
             if status in (200, 201, 202, 204):
@@ -351,7 +352,7 @@ class SpotifyClient:
                 raise error
             raise _api_error(status, content)
 
-    def _send(self, method, url, headers, body):
+    def _send(self, method, url, headers, body, timeout=None):
         remaining = self._blocked_until - self._clock()
         if remaining > 0:
             raise SpotifyRateLimitError(
@@ -359,7 +360,7 @@ class SpotifyClient:
                 int(remaining) + 1,
             )
         try:
-            return self._transport(method, url, headers, body, TIMEOUT)
+            return self._transport(method, url, headers, body, timeout or TIMEOUT)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
             raise SpotifyConnectionError(f"No se pudo conectar con Spotify: {reason}") from exc

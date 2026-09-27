@@ -9,14 +9,17 @@ from flask import (
 from werkzeug.serving import is_running_from_reloader
 
 import db
+import diagnostics_views
 import music_views
 import scheduler
 import spotify_views
 import ui
 from audio_player import create_music_player, create_player
 from bluetooth_audio import DEFAULT_SERVICE as DEFAULT_BLUETOOTH_SERVICE, NoBluetooth, create_bluetooth
+from health import DEFAULT_BLUEALSA_SERVICE, DEFAULT_RASPOTIFY_SERVICE, HealthChecker
 from music_library import LocalMusic, MusicLibrary
 from playback import AlarmPlaybackManager
+from preflight import DEFAULT_MINUTES as DEFAULT_PREFLIGHT_MINUTES, PreflightScheduler
 from spotify_client import create_spotify_client, parse_spotify_uri
 from spotify_player import RETRY_DELAYS, SpotifyAlarmPlayer
 
@@ -175,6 +178,11 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         # Servicio systemd del reproductor Bluetooth que se para mientras suena
         # una alarma ("none" = no gestionar Bluetooth). Ver bluetooth_audio.py.
         BLUETOOTH_SERVICE=os.environ.get("BLUETOOTH_SERVICE", DEFAULT_BLUETOOTH_SERVICE),
+        # Diagnóstico (solo consulta su estado): BlueALSA y Raspotify.
+        BLUEALSA_SERVICE=os.environ.get("BLUEALSA_SERVICE", DEFAULT_BLUEALSA_SERVICE),
+        RASPOTIFY_SERVICE=os.environ.get("RASPOTIFY_SERVICE", DEFAULT_RASPOTIFY_SERVICE),
+        # Minutos antes de cada alarma en que se ejecuta el pre-flight (0 = desactivado).
+        ALARM_PREFLIGHT_MINUTES=_env_int("ALARM_PREFLIGHT_MINUTES", DEFAULT_PREFLIGHT_MINUTES),
         SPOTIFY_CLIENT_ID=os.environ.get("SPOTIFY_CLIENT_ID", ""),
         SPOTIFY_CLIENT_SECRET=os.environ.get("SPOTIFY_CLIENT_SECRET", ""),
         # Nombre del dispositivo de las alarmas si aún no se ha elegido ninguno
@@ -220,12 +228,25 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     app.jinja_env.filters["selected_days"] = ui.selected_days
     app.register_blueprint(spotify_views.bp)
     app.register_blueprint(music_views.bp)
+    app.register_blueprint(diagnostics_views.bp)
     # Estado de la alarma que suena (STOP / +10 MIN). Ver playback.py.
     playback = AlarmPlaybackManager(
         app.extensions["audio_player"], app.extensions["spotify_alarm"],
         bluetooth=app.extensions["bluetooth"], music=app.extensions["music"],
     )
     app.extensions["playback"] = playback
+
+    # Health checks (página Diagnóstico y pre-flight). Solo observan. Ver health.py.
+    health = HealthChecker(
+        app.config, database=app.config["DATABASE"], library=library,
+        spotify=app.extensions["spotify"], bluetooth=app.extensions["bluetooth"],
+        playback=playback,
+    )
+    app.extensions["health"] = health
+    preflight = PreflightScheduler(app.config["DATABASE"], health, library=library,
+                                   minutes=app.config["ALARM_PREFLIGHT_MINUTES"])
+    app.extensions["preflight"] = preflight
+    app.extensions["scheduler"] = None
 
     # En modo debug Flask arranca dos procesos (vigilante + servidor); el
     # scheduler solo debe correr en el que sirve. Sin debug hay un solo proceso.
@@ -237,6 +258,9 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         background = scheduler.start_scheduler(app, playback)
         # Los snoozes usan el mismo APScheduler (jobs en memoria).
         playback.schedule_once = scheduler.date_job_scheduler(background)
+        app.extensions["scheduler"] = health.scheduler = background
+        # Pre-flight: jobs preflight:<id>, independientes del job de las alarmas.
+        preflight.start(background)
 
     @app.context_processor
     def inject_playback():
@@ -303,6 +327,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
             if errors:
                 return render_form(form_echo(data), errors, 400)
             db.create_alarm(*alarm_fields(data))
+            preflight.sync()
             flash(f"Alarma «{data['name']}» creada.")
             return redirect(url_for("index"))
         return render_form({"name": "", "time": "07:00", "days": [],
@@ -324,6 +349,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
             if errors:
                 return render_form(form_echo(data), errors, 400, alarm_id)
             db.update_alarm(alarm_id, *alarm_fields(data))
+            preflight.sync()
             flash(f"Alarma «{data['name']}» guardada.")
             return redirect(url_for("index"))
         days = [int(d) for d in alarm["days"].split(",")] if alarm["days"] else []
@@ -345,6 +371,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     def toggle_alarm(alarm_id):
         if not db.toggle_alarm(alarm_id):
             abort(404)
+        preflight.sync()
         return redirect(url_for("index"))
 
     @app.post("/alarms/<int:alarm_id>/delete")
@@ -352,6 +379,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         if not db.delete_alarm(alarm_id):
             abort(404)
         playback.forget(alarm_id)  # si sonaba o estaba pospuesta, se cancela
+        preflight.sync()
         flash("Alarma eliminada.")
         return redirect(url_for("index"))
 

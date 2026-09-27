@@ -127,7 +127,7 @@ body.is-offline .status { color: var(--danger); }
 
 .nav-bottom {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(4, 1fr);
   height: calc(var(--nav-h) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   background: var(--dusk);
@@ -571,6 +571,26 @@ input[type="range"] { width: 100%; height: 44px; margin: 0; accent-color: var(--
 .track form { margin: 0; }
 .track-delete { color: var(--danger); }
 @media (max-width: 419px) { .track-delete span { display: none; } .track-delete { padding: 8px 12px; } }
+
+/* --- Diagnóstico --- */
+
+.diag-ok { --diag: var(--ok); }
+.diag-warning { --diag: var(--sun); }
+.diag-error { --diag: var(--danger); }
+.diag-dot { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--diag); }
+
+.diag-summary { border-left: 4px solid var(--diag); }
+.diag-summary-title { display: flex; align-items: center; gap: 10px; font-size: 1.2rem; }
+
+.check-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr; gap: 10px; }
+@media (min-width: 520px) { .check-list { grid-template-columns: 1fr 1fr; } }
+.check { gap: 4px; }
+.check.diag-error { border-color: rgba(255, 122, 122, 0.5); }
+.check-name { font-size: 0.85rem; font-weight: 650; color: var(--muted); }
+.check-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 1.1rem; font-weight: 700; overflow-wrap: anywhere; }
+.check-badge { font-weight: 600; }
+.diag-error .check-badge { color: var(--danger); border-color: rgba(255, 122, 122, 0.5); }
+.check-detail { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
 
 /* --- Movimiento reducido --- */
 

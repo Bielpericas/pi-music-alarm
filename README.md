@@ -348,6 +348,9 @@ Para quitar el permiso: `sudo rm /etc/polkit-1/rules.d/50-pi-music-alarm-bluetoo
   (`"YYYY-MM-DD HH:MM"`) con un `UPDATE` atómico que solo tiene éxito si ese minuto no estaba ya marcado.
 - Si la app está apagada a la hora de una alarma, esa alarma **no** se recupera después.
 - El botón **Probar** ejecuta la misma acción al momento, sin tocar `last_triggered`.
+- Además hay jobs de **pre-flight** (`preflight:<id>`) y uno que los revisa cada minuto
+  (`preflight-sync`); solo observan y nunca cambian cuándo suena una alarma. Ver
+  [Diagnóstico y pre-flight](#diagnóstico-y-pre-flight).
 
 ## Cómo funciona el audio
 
@@ -654,10 +657,76 @@ Código: `playback.py` (`AlarmPlaybackManager`) guarda el estado y hace start / 
 (los hilos de waitress y de APScheduler no se pisan). El scheduler solo llama a `manager.start(alarm)`;
 las vistas solo llaman a `stop()` / `snooze()`. El snooze es un job de APScheduler en memoria.
 
+## Diagnóstico y pre-flight
+
+### Página Diagnóstico
+
+En la sección **Diagnóstico** (`/diagnostics/`) cada componente tiene una tarjeta con su estado
+(● verde = ok, ● ámbar = aviso, ● rojo = problema), un resumen y detalles técnicos seguros. Se ve la hora
+de la última comprobación y qué la lanzó (al abrir la página, **Comprobar ahora** o un pre-flight). El
+último informe también está en `/diagnostics/report.json`.
+
+| Tarjeta | Qué comprueba |
+|---|---|
+| **Audio USB** | Que la tarjeta de `ALSA_DEVICE` (o `plughw:CARD=Device,DEV=0`) existe y tiene salida, leyendo `/proc/asound`. No abre el dispositivo: no suena nada ni molesta a una alarma que esté sonando. Indica si está libre o en uso. |
+| **Spotify** | Si hay cuenta vinculada: una llamada ligera (`GET /me/player/devices`, 5 s máx.) y si el dispositivo de las alarmas (p. ej. «Groove») aparece. Sin cuenta: aviso, no error. |
+| **Raspotify** | `systemctl is-active raspotify`. |
+| **Música local** | Que `instance/music/` existe y cuántas pistas válidas hay. Vacía = aviso (queda el WAV de emergencia). |
+| **ffmpeg** | Que `FFMPEG_BINARY` existe y responde a `ffmpeg -version` (muestra la versión). |
+| **WAV de emergencia** | Que el archivo existe, se puede leer y es un WAV válido. Si falta es un **problema**: es el último respaldo. |
+| **Bluetooth** | `systemctl is-active` de `bluealsa` y `bluealsa-aplay` y, si se puede, cuántos dispositivos hay conectados (`bluetoothctl devices Connected`). Si el reproductor está parado porque suena una alarma, es normal. |
+| **Scheduler** | Que APScheduler está en marcha con el job de las alarmas, la próxima alarma, cuántas hay activas y cuántos pre-flight hay programados. |
+
+Estados:
+
+- **ok**: funciona como se espera.
+- **aviso**: funciona a medias, no está configurado o no se puede comprobar en este equipo (p. ej. en
+  Windows), y hay alternativa: biblioteca vacía, Spotify sin vincular, «Groove» no aparece...
+- **problema**: el componente debería funcionar y no funciona (servicio parado, archivo que falta, API
+  caída), o no se ha podido comprobar (tiempo agotado, `systemctl` no responde, error inesperado).
+
+Reglas: todos los checks son **de solo lectura**. No arrancan ni paran servicios, no tocan el
+emparejamiento ni la visibilidad Bluetooth, no reproducen sonido, no escriben en la base de datos y no
+tocan la reproducción de Spotify (lo único que puede pasar es la renovación normal del token). Cada
+comando tiene un timeout de 3 s y el conjunto, 12 s; un check que falla sale como problema y los demás
+siguen. La página nunca muestra tokens, el client secret, variables de entorno ni trazas de Python.
+
+### Pre-flight antes de cada alarma
+
+`ALARM_PREFLIGHT_MINUTES` (por defecto **5**) minutos antes de cada alarma activa, Groove ejecuta los
+mismos health checks, guarda el resultado como "última comprobación" y escribe un resumen en
+`instance/alarms.log`:
+
+```
+Pre-flight alarma 12: «Trabajo» 07:30 (spotify): audio=ok spotify=warning raspotify=ok local_music=ok ffmpeg=ok emergency=ok bluetooth=ok scheduler=ok
+Pre-flight alarma 12: Spotify puede fallar; hay respaldo: música local (4 pistas).
+Pre-flight alarma 12: problemas: spotify=warning (Conectado)
+```
+
+Si todo está bien, la última línea es `todo listo.`. Para alarmas locales no se registra Spotify.
+
+**En esta versión el pre-flight solo observa y registra.** No intenta reparar nada: no reinicia
+Raspotify ni BlueALSA, no reproduce audio y no cambia la alarma. Aunque todos los checks fallen (o el
+propio pre-flight falle), la alarma suena a su hora: la dispara el job `check_alarms` de siempre, que
+no depende del pre-flight.
+
+Programación:
+
+- Cada alarma activa tiene un job `preflight:<id>` para su **próxima** vez. Al crear, editar,
+  activar/desactivar o borrar una alarma se recalculan al momento; un job `preflight-sync` los revisa
+  además cada minuto (programa la siguiente vez de las recurrentes, quita el de las de "una vez" tras
+  sonar y corrige cambios de la hora del sistema). No quedan jobs huérfanos.
+- Tras reiniciar Groove se vuelven a crear desde la base de datos.
+- Si a la alarma le quedan **menos de 5 minutos** (p. ej. la acabas de crear para dentro de 3), esa vez
+  no hay pre-flight y la alarma suena con normalidad. Nunca se ejecuta un pre-flight con retraso.
+- `ALARM_PREFLIGHT_MINUTES=0` desactiva el pre-flight.
+- En el log: `Pre-flight programado para «Trabajo» (alarma 12): 29/09 07:25, antes de la alarma de las
+  07:30` y `Pre-flight cancelado para la alarma 12: la alarma ya no está activa`.
+
 ## Interfaz y app en el móvil (PWA)
 
 La interfaz está pensada primero para el móvil: oscura, con navegación inferior (**Alarmas** /
-**Spotify** / **Música**) y, en pantallas anchas, navegación arriba y un ancho máximo de lectura.
+**Spotify** / **Música** / **Diagnóstico**) y, en pantallas anchas, navegación arriba y un ancho máximo de lectura.
 
 - **Pantalla principal**: arriba la **próxima alarma** (hora grande y cuánto falta; el sol del
   horizonte sube según se acerca). Debajo, la lista con un interruptor para activar o desactivar cada
@@ -696,6 +765,9 @@ spotify_player.py   # flujo de alarma Spotify: dispositivo -> transferir -> repr
 playback.py         # alarma sonando: estado, STOP y snooze
 bluetooth_audio.py  # para / arranca bluealsa-aplay alrededor de las alarmas (systemctl)
 fade.py             # fade-in de volumen (Spotify)
+health.py           # health checks de solo lectura (Diagnóstico y pre-flight)
+preflight.py        # jobs preflight:<id> antes de cada alarma y su resumen en el log
+diagnostics_views.py # rutas /diagnostics/... (página, Comprobar ahora, report.json)
 serve.py            # arranque de producción (waitress, red local)
 deploy/             # plantilla systemd + install-service.sh; regla polkit de Bluetooth
 .env.example        # plantilla de configuración (copiar a .env)
