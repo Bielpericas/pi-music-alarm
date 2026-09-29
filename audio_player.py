@@ -5,8 +5,10 @@
 `FfmpegPlayer` las pistas de la biblioteca local (MP3, OGG, WAV) con ffmpeg.
 
 Reglas comunes:
-- `play()` nunca bloquea: lanza la reproducción y vuelve enseguida.
+- `play()` lanza la reproducción; ffmpeg espera una breve comprobación de arranque.
 - `play()` nunca lanza excepciones: si algo falla lo registra y devuelve False.
+- `play_monitored(..., on_finished)` notifica el final desde el hilo vigilante,
+  fuera del lock, solo si arrancó y no fue detenido: True = final normal, False = fallo.
 """
 import logging
 import subprocess
@@ -33,7 +35,7 @@ class NullAudioPlayer(AudioPlayer):
     """No reproduce nada. Útil para desactivar el audio."""
 
     def play(self):
-        return True
+        return False  # audio desactivado: nunca anunciar una reproducción real
 
 
 class LocalAudioPlayer(AudioPlayer):
@@ -53,17 +55,27 @@ class LocalAudioPlayer(AudioPlayer):
         self._lock = threading.Lock()
 
     def play(self):
+        return self._play()
+
+    def play_monitored(self, on_finished):
+        return self._play(on_finished)
+
+    def _play(self, on_finished=None):
         if not self.sound_path.is_file():
             logger.error("No se encuentra el sonido de la alarma: %s", self.sound_path)
             return False
         if not self._is_valid_wav():
             return False
         try:
-            self.stop()
+            if self.stop() is False:
+                return False
             if self.platform == "win32":
-                self._play_winsound()
+                if on_finished is None:
+                    self._play_winsound()
+                else:
+                    self._play_windows_process(on_finished)
             elif self.platform.startswith("linux"):
-                self._play_aplay()
+                self._play_aplay(on_finished)
             else:
                 logger.error("Audio local no soportado en la plataforma %s", self.platform)
                 return False
@@ -87,9 +99,16 @@ class LocalAudioPlayer(AudioPlayer):
             with self._lock:
                 if self._process is not None and self._process.poll() is None:
                     self._process.terminate()
+                    try:
+                        self._process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        self._process.kill()
+                        self._process.wait(timeout=2)
                 self._process = None
+            return True
         except Exception:
             logger.exception("Error al detener el audio")
+            return False
 
     def _is_valid_wav(self):
         """Comprueba la cabecera: en modo asíncrono los errores no llegarían."""
@@ -111,7 +130,7 @@ class LocalAudioPlayer(AudioPlayer):
             winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
         )
 
-    def _play_aplay(self):
+    def _play_aplay(self, on_finished=None):
         command = ["aplay", "-q"]
         if self.alsa_device:
             command += ["-D", self.alsa_device]
@@ -123,14 +142,34 @@ class LocalAudioPlayer(AudioPlayer):
         with self._lock:
             self._process = process
         # Un hilo ligero espera a aplay para registrar errores sin bloquear.
-        threading.Thread(target=self._watch, args=(process,), daemon=True).start()
+        threading.Thread(target=self._watch, args=(process, on_finished), daemon=True).start()
 
-    def _watch(self, process):
+    def _play_windows_process(self, on_finished):
+        # winsound asíncrono no informa del final. Un proceso aislado permite
+        # observar PlaySound síncrono y detenerlo sin carreras con el siguiente WAV.
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import sys, winsound; "
+             "winsound.PlaySound(sys.argv[1], winsound.SND_FILENAME | winsound.SND_NODEFAULT)",
+             str(self.sound_path)], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        with self._lock:
+            self._process = process
+        threading.Thread(target=self._watch, args=(process, on_finished), daemon=True).start()
+
+    def _watch(self, process, on_finished=None):
         _, stderr = process.communicate()
-        # Código negativo = lo hemos parado nosotros con terminate().
-        if process.returncode and process.returncode > 0:
+        with self._lock:
+            current = self._process is process
+            if current:
+                self._process = None
+        # Si ya no es el proceso actual, lo ha parado stop(): en Windows
+        # terminate() deja código 1, que no es un fallo del reproductor.
+        if current and process.returncode and process.returncode > 0:
             message = stderr.decode(errors="replace").strip() if stderr else ""
-            logger.error("aplay terminó con código %s: %s", process.returncode, message)
+            logger.error("Reproductor WAV terminó con código %s: %s", process.returncode, message)
+        if current and on_finished is not None:
+            on_finished(process.returncode == 0)
 
 
 DEFAULT_MUSIC_DEVICE = "plughw:CARD=Device,DEV=0"
@@ -163,7 +202,14 @@ class FfmpegPlayer:
                 "-stream_loop", "-1", "-i", str(path), "-f", "alsa", self.alsa_device]
 
     def play(self, path):
-        self.stop()
+        return self._play(path)
+
+    def play_monitored(self, path, on_finished):
+        return self._play(path, on_finished)
+
+    def _play(self, path, on_finished=None):
+        if not self.stop():
+            return False
         try:
             process = self._popen(self.command(path), stdin=subprocess.DEVNULL,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -179,7 +225,7 @@ class FfmpegPlayer:
         except subprocess.TimeoutExpired:
             with self._lock:
                 self._process = process
-            threading.Thread(target=self._watch, args=(process,), daemon=True).start()
+            threading.Thread(target=self._watch, args=(process, on_finished), daemon=True).start()
             return True
         except Exception:
             logger.exception("Error esperando a ffmpeg")
@@ -192,10 +238,13 @@ class FfmpegPlayer:
 
     def stop(self):
         with self._lock:
-            process, self._process = self._process, None
-        if process is None:
+            process = self._process
+            if process is None:
+                return True
+            if not self._terminate(process):
+                return False  # conservar el proceso para reintentar STOP
+            self._process = None
             return True
-        return self._terminate(process)
 
     def _terminate(self, process):
         try:
@@ -214,12 +263,19 @@ class FfmpegPlayer:
             logger.exception("No se pudo detener ffmpeg")
             return False
 
-    def _watch(self, process):
+    def _watch(self, process, on_finished=None):
         message = _stderr_text(process)
         process.wait()
         # Código negativo = lo hemos parado nosotros (SIGTERM/SIGKILL).
         if process.returncode and process.returncode > 0:
             logger.error("ffmpeg terminó con código %s: %s", process.returncode, message)
+        with self._lock:
+            current = self._process is process
+            if current:
+                self._process = None
+        if current and on_finished is not None:
+            # Una pista en bucle nunca debe terminar por sí sola, incluso con código 0.
+            on_finished(False)
 
 
 def _stderr_text(process):

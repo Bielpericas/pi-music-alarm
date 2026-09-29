@@ -347,6 +347,25 @@ class ManagerMusicTest(TempDirTest):
     def played(self):
         return [Path(command[command.index("-i") + 1]).name for command, _ in self.popen.calls]
 
+    def test_running_ffmpeg_crash_reaches_manager_and_uses_wav(self):
+        fallback = threading.Event()
+        self.emergency.play.side_effect = lambda: fallback.set() or True
+        self.manager.start(alarm(track="a.mp3"))
+        self.popen.processes[0]._finish(1)
+        self.assertTrue(fallback.wait(2), "El vigilante no activó el respaldo")
+        with self.manager._lock:
+            self.assertEqual(self.manager.active.status, "playing")
+        self.emergency.play.assert_called_once_with()
+
+    def test_running_ffmpeg_crash_and_unavailable_wav_reports_failure(self):
+        fallback = threading.Event()
+        self.emergency.play.side_effect = lambda: fallback.set() and False
+        self.manager.start(alarm(track="a.mp3"))
+        self.popen.processes[0]._finish(1)
+        self.assertTrue(fallback.wait(2))
+        with self.manager._lock:
+            self.assertEqual(self.manager.active.status, "failed")
+
     def test_specific_track(self):
         self.assertEqual(self.manager.start(alarm(track="b.ogg")), "local")
         self.assertEqual(self.played(), ["b.ogg"])

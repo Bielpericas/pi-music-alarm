@@ -204,8 +204,14 @@ def summarize(alarm, report, local_ready):
     statuses = " ".join(f"{cid}={report.status_of(cid)}" for cid in checks)
     lines = [(logging.INFO, f"«{alarm['name']}» {alarm['time']} ({alarm['source']}): {statuses}")]
 
-    problems = [f"{cid}={report.status_of(cid)} ({report.get(cid).summary})"
-                for cid in checks if report.status_of(cid) != OK and report.get(cid)]
+    problems = []
+    for cid in checks:
+        check = report.get(cid)
+        if check and check.status != OK:
+            problem = f"{cid}={check.status} ({check.summary})"
+            if check.details:
+                problem += ": " + "; ".join(" ".join(str(d).split()) for d in check.details)
+            problems.append(problem)
     emergency_ready = report.status_of("emergency") == OK
     fallback = local_ready or ("WAV de emergencia" if emergency_ready else None)
 

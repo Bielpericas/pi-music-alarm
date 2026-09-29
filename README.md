@@ -791,10 +791,13 @@ la hora, el nombre, cómo suena (Spotify, sonido local o sonido local como respa
 - **STOP**: para el sonido (pausa Spotify o para el WAV) y da la alarma por terminada. No cambia la
   programación: una alarma recurrente seguirá sonando los próximos días y una puntual sigue desactivada.
   Pulsarlo varias veces no pasa nada.
+  Si la parada falla, el recuadro indica **parada pendiente** y permite reintentar STOP;
+  no se devuelve Bluetooth ni se descarta un auto-stop que todavía esté programado.
 - **+10 MIN**: para el sonido y vuelve a disparar **la misma alarma** (misma fuente y mismo contenido de
   Spotify) dentro de 10 minutos, sin cambiar su hora ni crear una alarma nueva en la lista. Se puede
   posponer las veces que quieras. Mientras tanto aparece "vuelve a sonar a las HH:MM" con un botón
   **Cancelar**.
+  Si no se puede detener el sonido, no se programa el snooze y se muestra el error.
 
 La página consulta el estado cada 10 s (`/playback/state`) y se recarga sola cuando empieza a sonar una
 alarma, así que puedes dejarla abierta en el móvil.
@@ -802,12 +805,19 @@ alarma, así que puedes dejarla abierta en el móvil.
 Reglas:
 
 - **Solo suena una alarma a la vez**: si se dispara otra mientras suena una, la anterior se para y suena
-  la nueva.
+  la nueva. Si hay una parada pendiente, se conserva su control y se rechaza iniciar otra
+  hasta resolverla; no se encola la nueva alarma.
 - Si una alarma vuelve a sonar (o la borras) mientras estaba pospuesta, ese snooze se cancela.
 - **Los snoozes solo viven en memoria**: si la app o la Raspberry se reinician durante un snooze, se
   pierde (mejor eso que sonar a una hora incorrecta). Las alarmas normales siguen guardadas en SQLite.
-- La música local suena en bucle; el WAV de emergencia, una vez. El recuadro sigue visible hasta STOP,
-  +10 MIN o el auto-stop.
+- La música local suena en bucle; el WAV de emergencia, una vez. Si ffmpeg termina inesperadamente,
+  se intenta el WAV sin reiniciar el plazo de auto-stop. Si tampoco puede reproducirse, el recuadro
+  muestra **fallo de sonido**. Si el WAV termina normalmente, muestra **sonido terminado**.
+  En ambos casos se libera Bluetooth y el aviso permanece hasta STOP o +10 MIN.
+- El estado distingue inicio, reproducción, fallo, parada pendiente y finalización. El polling
+  actualiza también estos cambios. `AUDIO_BACKEND=none` no anuncia una reproducción ficticia.
+  La supervisión confirma el estado de los procesos locales, no que el altavoz sea audible;
+  Spotify sigue confirmándose mediante la aceptación de su API.
 
 ### Duración máxima (auto-stop)
 

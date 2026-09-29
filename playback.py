@@ -43,7 +43,7 @@ Reglas:
 """
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import NamedTuple, Optional
 
@@ -70,9 +70,21 @@ def volume_settings(alarm):
     return start, fade_plan(start, end, seconds)
 
 
+def monitored_play(player, args, callback):
+    """Usa el protocolo opcional de finalización; conserva los reproductores inyectados.
+
+    play_monitored devuelve si arrancó. Si arrancó, notifica una sola vez desde
+    otro hilo, fuera del lock del reproductor: True = final normal, False = fallo.
+    Una parada solicitada no notifica. Los reproductores sin protocolo usan play().
+    """
+    if callback is not None and callable(getattr(type(player), "play_monitored", None)):
+        return player.play_monitored(*args, on_finished=callback)
+    return player.play(*args)
+
+
 def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=None,
-                     music=None):
-    """Hace sonar la alarma y devuelve "local", "spotify", "fallback" o "cancelled".
+                     music=None, on_finished=None):
+    """Devuelve local, spotify, fallback, cancelled o failed (ningún sonido iniciado).
 
     Cadena: Spotify → música local (`music`: pista elegida o aleatoria de la
     biblioteca) → WAV de emergencia (`player.play()`).
@@ -103,17 +115,21 @@ def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=
 
     if music is not None:
         try:
-            if music.play(alarm):
+            callback = (lambda ok: on_finished("music", ok)) if on_finished else None
+            if monitored_play(music, (alarm,), callback):
                 return outcome
         except Exception:
             logger.exception("La música local falló al disparar «%s»", name)
         logger.warning("Sin música local para «%s»: suena el WAV de emergencia", name)
     if player is not None:
         try:
-            player.play()
+            callback = (lambda ok: on_finished("emergency", ok)) if on_finished else None
+            if monitored_play(player, (), callback):
+                return outcome
         except Exception:
             logger.exception("El reproductor falló al disparar «%s»", name)
-    return outcome
+    logger.error("No se pudo iniciar ningún sonido para «%s»", name)
+    return "failed"
 
 
 def timer_schedule_once(run_at, callback):
@@ -136,6 +152,7 @@ class ActiveAlarm:
                           # busca el dispositivo; "cancelled" si STOP llegó antes de sonar
     manual: bool = False  # disparada con Probar
     snoozes: int = 0      # cuántas veces se ha pospuesto ya
+    status: str = "playing"  # connecting, playing, failed, stop_pending, finished, cancelled
 
     @property
     def id(self):
@@ -201,6 +218,9 @@ class AlarmPlaybackManager:
         alarm = {key: alarm[key] for key in ALARM_FIELDS + OPTIONAL_FIELDS
                  if key in ALARM_FIELDS or key in keys}
         with self._lock:
+            if self._active is not None and self._active.status == "stop_pending":
+                logger.warning("No se inicia otra alarma mientras haya una parada pendiente")
+                return "stop_pending"
             # La generación sube antes de avisar: un temporizador de sueño que se
             # esté creando a la vez ve el cambio y no se programa.
             self._token += 1
@@ -222,16 +242,16 @@ class AlarmPlaybackManager:
             started_at = self._clock()
             starting = threading.Event()
             self._starting = starting
-            if alarm["source"] == "spotify":
-                # Visible (con STOP) mientras se busca el dispositivo y se reintenta.
-                self._active = ActiveAlarm(alarm, started_at, "connecting", manual, snoozes)
+            self._active = ActiveAlarm(alarm, started_at, "connecting", manual, snoozes,
+                                       status="connecting")
             # Con la tarjeta libre antes de reproducir (Spotify, WAV o respaldo).
             self._pause_bluetooth()
             initial_volume, plan = volume_settings(alarm)
             try:
                 via = play_alarm_sound(alarm, self.player, self.spotify,
                                        volume=initial_volume, interrupted=starting,
-                                       music=self.music)
+                                       music=self.music,
+                                       on_finished=lambda kind, ok: self._local_ended(token, kind, ok))
             finally:
                 self._starting = None
             # Si la anterior sonaba en Spotify y la nueva no la ha reemplazado
@@ -240,12 +260,38 @@ class AlarmPlaybackManager:
             if previous is not None and previous.via == "spotify" and via != "spotify":
                 self._stop_spotify()
 
-            self._active = ActiveAlarm(alarm, started_at, via, manual, snoozes)
+            status = via if via in ("failed", "cancelled") else "playing"
+            self._active = ActiveAlarm(alarm, started_at, via, manual, snoozes, status)
             if via == "spotify" and plan:
                 self._start_fade(plan)
-            if via != "cancelled":  # si no llegó a sonar, STOP ya viene de camino
+            if status == "playing":
                 self._schedule_auto_stop(alarm, started_at, token)
+            elif status == "failed":
+                self._resume_bluetooth()
             return via
+
+    def _local_ended(self, token, kind, ok):
+        """Final del proceso, fuera de su lock. Ignora avisos de alarmas anteriores."""
+        with self._lock:
+            active = self._active
+            if token != self._token or active is None or active.status != "playing":
+                return
+            if kind == "music":
+                logger.warning("La música local terminó inesperadamente; se intenta el WAV")
+                try:
+                    started = self.player is not None and monitored_play(
+                        self.player, (), lambda success: self._local_ended(token, "emergency", success))
+                except Exception:
+                    logger.exception("Falló el WAV de emergencia")
+                    started = False
+                if started:
+                    return
+                ok = False
+            self._active = replace(active, status="finished" if ok else "failed")
+            self._cancel_auto_stop()
+            self._resume_bluetooth()
+            if not ok:
+                logger.error("La alarma «%s» se ha quedado sin sonido", active.alarm["name"])
 
     def stop(self):
         """Para la alarma que suena. Devuelve StopResult, o None si no sonaba nada."""
@@ -258,15 +304,21 @@ class AlarmPlaybackManager:
         active = self._active
         if active is None:
             return None
-        self._active = None
-        self._cancel_auto_stop(log=not auto)
         self._cancel_fade()  # antes de pausar: que no suba el volumen tras STOP
-        if active.via == "spotify":
+        if active.status in ("failed", "finished", "cancelled"):
+            silenced = True
+        elif active.via == "spotify":
             silenced = self._stop_spotify()
         elif active.via in ("local", "fallback"):
             silenced = self._stop_local()
         else:
             silenced = True  # "cancelled": no llegó a sonar nada
+        if not silenced:
+            self._active = replace(active, status="stop_pending")
+            logger.warning("Parada pendiente de «%s»: vuelve a pulsar STOP", active.alarm["name"])
+            return StopResult(self._active, False)
+        self._active = None
+        self._cancel_auto_stop(log=not auto)
         if auto:
             logger.info("ALARMA DETENIDA POR AUTO-STOP: %s (duración máxima: %s min)",
                         active.alarm["name"], active.alarm.get(DURATION_FIELD))
@@ -283,7 +335,7 @@ class AlarmPlaybackManager:
         self._interrupt_start()
         with self._lock:
             result = self.stop()
-            if result is None:
+            if result is None or not result.silenced:
                 return None
             active = result.active
             run_at = self._clock() + timedelta(minutes=minutes or self.snooze_minutes)
@@ -440,7 +492,7 @@ class AlarmPlaybackManager:
                 silenced = False
         if self.player is not None:
             try:
-                self.player.stop()
+                silenced = (self.player.stop() is not False) and silenced
             except Exception:
                 logger.exception("No se pudo parar el sonido local")
                 silenced = False

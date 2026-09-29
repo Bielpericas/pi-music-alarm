@@ -103,6 +103,7 @@ class LocalAudioPlayerTest(unittest.TestCase):
         player = LocalAudioPlayer(self.sound, platform="linux")
         process = mock.Mock(returncode=1)
         process.communicate.return_value = (None, b"formato no soportado")
+        player._process = process  # como en _play_aplay: el proceso en curso
         with self.assertLogs("alarms", "ERROR") as logs:
             player._watch(process)
         self.assertIn("formato no soportado", logs.output[0])

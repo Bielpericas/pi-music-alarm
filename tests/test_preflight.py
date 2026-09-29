@@ -292,6 +292,23 @@ class PreflightRunTest(unittest.TestCase):
         output = self.logs(self.add_alarm())
         self.assertIn("Spotify puede fallar; hay respaldo: música local (4 pistas).", output)
 
+    def test_logs_problem_details_for_errors_and_warnings(self):
+        for status in (ERROR, WARNING):
+            with self.subTest(status=status):
+                detail = "/usr/bin/ffmpeg tardó más de 3 s"
+                retry = "Timeout persistente tras un único reintento (2 intentos)."
+                self.checker.result = HealthReport(MONDAY_0700, "test", tuple(
+                    CheckResult(c.id, c.name, status, "No se puede ejecutar", (detail, retry))
+                    if c.id == "ffmpeg" else c for c in report().results))
+                output = self.logs(self.add_alarm(source="local"))
+                self.assertIn(f"ffmpeg={status} (No se puede ejecutar): {detail}; {retry}", output)
+
+    def test_ok_details_are_not_logged(self):
+        self.checker.result = HealthReport(MONDAY_0700, "test", tuple(
+            CheckResult(c.id, c.name, OK, c.summary, ("detalle de éxito",))
+            for c in report().results))
+        self.assertNotIn("detalle de éxito", self.logs(self.add_alarm()))
+
     def test_spotify_failure_with_only_emergency_wav(self):
         self.checker.result = report(raspotify=ERROR, local_music=WARNING)
         output = self.logs(self.add_alarm())

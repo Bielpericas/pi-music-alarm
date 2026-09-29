@@ -222,7 +222,8 @@ class FfmpegCheckTest(HealthTestCase):
         self.assertEqual((result.status, result.summary), (OK, "Versión 5.1.6-0+deb12u1+rpt1"))
         command, kwargs = self.run.calls[0]
         self.assertEqual(command, ["/usr/bin/ffmpeg", "-hide_banner", "-version"])
-        self.assertLessEqual(kwargs["timeout"], 5)
+        self.assertEqual(kwargs["timeout"], 3)
+        self.assertEqual(len(self.run.calls), 1)
 
     def test_not_installed(self):
         result = self.check("ffmpeg", which=lambda binary: None)
@@ -239,10 +240,47 @@ class FfmpegCheckTest(HealthTestCase):
         result = self.check("ffmpeg")
         self.assertEqual(result.status, ERROR)
         self.assertIn("tardó más de 3 s", result.details[0])
+        self.assertIn("2 intentos", result.details[1])
+        self.assertEqual(len(self.run.calls), 2)
+        self.assertEqual([kwargs["timeout"] for _, kwargs in self.run.calls], [3, 3])
+
+    def test_initial_timeout_then_success(self):
+        run = mock.Mock(side_effect=[subprocess.TimeoutExpired("ffmpeg", 3),
+                                     subprocess.CompletedProcess([], 0, "ffmpeg version 5.1\n")])
+        with self.assertLogs("alarms", "WARNING") as logs:
+            result = self.check("ffmpeg", run=run)
+        self.assertEqual((result.status, result.summary), (OK, "Versión 5.1"))
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0], run.call_args_list[1])
+        self.assertIn("tardó más de 3 s", "\n".join(logs.output))
+
+    def test_oserror_and_missing_binary_are_not_retried(self):
+        for error in (OSError(8, "Exec format error"), PermissionError(13, "denied"),
+                      FileNotFoundError()):
+            with self.subTest(error=error):
+                run = mock.Mock(side_effect=error)
+                result = self.check("ffmpeg", run=run)
+                self.assertEqual((result.status, result.summary), (ERROR, "No se puede ejecutar"))
+                self.assertTrue(result.details)
+                run.assert_called_once()
+                if error.strerror:
+                    self.assertIn(error.strerror, result.details[0])
+
+    def test_retry_does_not_hide_real_errors(self):
+        for response in (OSError(8, "Exec format error"),
+                         subprocess.CompletedProcess([], 1, "")):
+            with self.subTest(response=response):
+                run = mock.Mock(side_effect=[subprocess.TimeoutExpired("ffmpeg", 3), response])
+                result = self.check("ffmpeg", run=run)
+                self.assertEqual(result.status, ERROR)
+                self.assertEqual(run.call_count, 2)
+                self.assertIn("Exec format error" if isinstance(response, OSError) else "código 1",
+                              result.details[0])
 
     def test_broken_binary(self):
         self.run.responses[("ffmpeg", "-hide_banner", "-version")] = ("", 1)
         self.assertEqual(self.check("ffmpeg").status, ERROR)
+        self.assertEqual(len(self.run.calls), 1)
         self.run.responses[("ffmpeg", "-hide_banner", "-version")] = PermissionError(13, "denied")
         self.assertEqual(self.check("ffmpeg").summary, "No se puede ejecutar")
 

@@ -11,7 +11,11 @@
     <p class="ringing-label">ALARMA</p>
     <h1 id="ringing-title" class="ringing-title">{{ active.alarm.time }} · {{ active.alarm.name }}</h1>
     <p class="ringing-detail">
-      {% if active.via == "connecting" %}Conectando con Spotify…
+      {% if active.status == "stop_pending" %}No se pudo detener el sonido. Vuelve a pulsar STOP.
+      {% elif active.status == "failed" %}No se pudo reproducir el sonido de la alarma. Revisa Diagnóstico.
+      {% elif active.status == "finished" %}El sonido de la alarma ha terminado.
+      {% elif active.status == "cancelled" %}Arranque cancelado.
+      {% elif active.via == "connecting" %}{% if active.alarm.source == "spotify" %}Conectando con Spotify…{% else %}Iniciando sonido local…{% endif %}
       {% elif active.via == "spotify" %}{{ active.alarm | describe_source }}
       {% elif active.via == "fallback" %}Sonido local (Spotify no disponible)
       {% else %}Sonido local{% endif %}

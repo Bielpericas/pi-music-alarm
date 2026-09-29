@@ -311,7 +311,7 @@ class AlarmSourceAppTest(unittest.TestCase):
 
     def test_probar_local(self):
         self.create()
-        self.assertIn("sonando el WAV local", self.probar())
+        self.assertIn("reproducción local iniciada", self.probar())
         self.local.play.assert_called_once_with()
         self.spotify.play.assert_not_called()
 

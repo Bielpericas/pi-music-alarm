@@ -142,6 +142,10 @@ class CommandFailed(Exception):
     """No se pudo ejecutar el comando (no existe, tiempo agotado...)."""
 
 
+class CommandTimedOut(CommandFailed):
+    """El comando superó su timeout; permite reintentos selectivos."""
+
+
 def run_command(run, command, timeout=COMMAND_TIMEOUT):
     """Ejecuta `command` sin shell ni stdin. Devuelve CompletedProcess o lanza CommandFailed."""
     try:
@@ -150,7 +154,7 @@ def run_command(run, command, timeout=COMMAND_TIMEOUT):
     except FileNotFoundError:
         raise CommandFailed(f"{command[0]} no está instalado") from None
     except subprocess.TimeoutExpired:
-        raise CommandFailed(f"{command[0]} tardó más de {timeout} s") from None
+        raise CommandTimedOut(f"{command[0]} tardó más de {timeout} s") from None
     except OSError as exc:
         raise CommandFailed(f"no se pudo ejecutar {command[0]}: {exc.strerror or exc}") from None
 
@@ -376,10 +380,18 @@ class HealthChecker:
                               "En este equipo la música local no se usa (solo en la Raspberry).")
             return result("ffmpeg", ERROR, "No instalado",
                           f"No se encuentra «{name}». Instálalo con: sudo apt install -y ffmpeg")
-        try:
-            completed = run_command(self._run, [found, "-hide_banner", "-version"])
-        except CommandFailed as exc:
-            return result("ffmpeg", ERROR, "No se puede ejecutar", short(exc))
+        for attempt in range(2):
+            try:
+                completed = run_command(self._run, [found, "-hide_banner", "-version"])
+                break
+            except CommandTimedOut as exc:
+                if attempt == 1:
+                    return result("ffmpeg", ERROR, "No se puede ejecutar", short(exc),
+                                  "Timeout persistente tras un único reintento (2 intentos).")
+                logger.warning("Diagnóstico: ffmpeg -version: %s; se reintenta una sola vez",
+                               short(exc))
+            except CommandFailed as exc:
+                return result("ffmpeg", ERROR, "No se puede ejecutar", short(exc))
         if completed.returncode != 0:
             return result("ffmpeg", ERROR, "No se puede ejecutar",
                           f"«{name} -version» terminó con código {completed.returncode}.")

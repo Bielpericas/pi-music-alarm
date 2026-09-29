@@ -164,7 +164,7 @@ def describe_source(alarm):
 
 def playback_key(active, snoozes):
     """Huella del estado de reproducción: si cambia, la página se recarga."""
-    parts = [f"{active.id}@{active.started_at.isoformat()}@{active.via}" if active else "-"]
+    parts = [f"{active.id}@{active.started_at.isoformat()}@{active.via}@{active.status}" if active else "-"]
     parts += [f"{p.alarm['id']}@{p.run_at.isoformat()}" for p in snoozes]
     return "|".join(parts)
 
@@ -466,12 +466,15 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         # Exactamente el mismo flujo que usa el scheduler.
         outcome = playback.start(alarm, manual=True)
         messages = {
-            "local": "sonando el WAV local",
+            "local": "reproducción local iniciada",
             "spotify": "reproduciendo en Spotify",
-            "fallback": "Spotify falló, sonando el WAV local (motivo en instance/alarms.log)",
+            "fallback": "Spotify falló, reproducción local de respaldo iniciada",
+            "failed": "no se pudo reproducir ningún sonido. Revisa Diagnóstico",
+            "cancelled": "prueba cancelada",
+            "stop_pending": "hay una parada pendiente. Pulsa STOP antes de volver a probar",
         }
         flash(f"Alarma «{alarm['name']}» probada: {messages[outcome]}.",
-              "error" if outcome == "fallback" else "message")
+              "error" if outcome in ("fallback", "failed", "stop_pending") else "message")
         return redirect(url_for("index"))
 
     # --- Alarma sonando: STOP y +10 MIN (la lógica vive en playback.py) ---
@@ -482,8 +485,8 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         if result is None:
             flash("No hay ninguna alarma sonando.")
         elif not result.silenced:
-            flash(f"Alarma «{result.active.alarm['name']}» detenida, pero no se pudo "
-                  "parar el sonido (mira instance/alarms.log).", "error")
+            flash(f"No se pudo parar el sonido de «{result.active.alarm['name']}». "
+                  "Parada pendiente: vuelve a pulsar STOP.", "error")
         else:
             flash(f"Alarma «{result.active.alarm['name']}» detenida.")
         return redirect(url_for("index"))
@@ -492,7 +495,11 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     def snooze_alarm():
         pending = playback.snooze()
         if pending is None:
-            flash("No hay ninguna alarma sonando.")
+            if playback.active is not None and playback.active.status == "stop_pending":
+                flash("No se pudo parar el sonido: no se ha pospuesto la alarma. "
+                      "Vuelve a pulsar STOP.", "error")
+            else:
+                flash("No hay ninguna alarma sonando.")
         else:
             flash(f"Alarma «{pending.alarm['name']}» pospuesta hasta las "
                   f"{pending.run_at.strftime('%H:%M')}.")
@@ -515,6 +522,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
                 "name": active.alarm["name"],
                 "started_at": active.started_at.isoformat(timespec="seconds"),
                 "via": active.via,
+                "status": active.status,
             },
             snoozes=[{"id": p.alarm["id"], "name": p.alarm["name"],
                       "run_at": p.run_at.isoformat(timespec="seconds")}

@@ -118,7 +118,11 @@ class ManagerTest(unittest.TestCase):
         self.manager.start(SPOTIFY)
         result = self.manager.stop()
         self.assertFalse(result.silenced)
-        self.assertIsNone(self.manager.active)  # aun así se da por terminada
+        self.assertEqual(self.manager.active.status, "stop_pending")
+        self.spotify.stop.return_value = True
+        self.assertTrue(self.manager.stop().silenced)
+        self.assertIsNone(self.manager.active)
+        self.assertEqual(self.spotify.stop.call_count, 2)
 
     def test_concurrent_stops_stop_once(self):
         self.manager.start(LOCAL)

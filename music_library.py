@@ -225,6 +225,12 @@ class LocalMusic:
         self._choice = choice
 
     def play(self, alarm):
+        return self._play(alarm)
+
+    def play_monitored(self, alarm, on_finished):
+        return self._play(alarm, on_finished)
+
+    def _play(self, alarm, on_finished=None):
         """Devuelve el nombre de la pista que suena, o None si no ha podido sonar."""
         name = alarm["name"]
         try:
@@ -234,7 +240,9 @@ class LocalMusic:
             return None
         if path is None:
             return None
-        if not self.player.play(path):
+        started = (self.player.play_monitored(path, on_finished=on_finished)
+                   if on_finished is not None else self.player.play(path))
+        if not started:
             logger.warning("No se pudo reproducir «%s» para «%s»", path.name, name)
             return None
         how = "elegida" if alarm.get("local_track") else "al azar"
