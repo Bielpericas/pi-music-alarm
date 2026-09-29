@@ -1074,3 +1074,11 @@ alarmas antiguas), `volume_start`, `volume_end`, `fade_minutes` `max_duration_mi
   worker*: iniciado pero **pendiente** (ver [docs/https-spotify-oauth.md](docs/https-spotify-oauth.md)).
 - Protección CSRF si la app se expone fuera de la red local (y asegurarse de que `SECRET_KEY` está
   definida en `.env`: sin ella se usa `dev`).
+- Alarmas durante una **parada pendiente**: la alarma que se dispara mientras hay un STOP fallido se
+  pierde (solo queda un aviso en el log; el scheduler ignora el `"stop_pending"` que devuelve
+  `start()`). Además, si falla el auto-stop no se reintenta solo: hasta que alguien pulse STOP no
+  suena ninguna alarma más. Decidir si reintentar la parada automáticamente o encolar la alarma.
+- Al **sustituir** una alarma que suena en local, `start()` no comprueba si se ha podido parar el
+  sonido anterior y arranca la nueva igualmente (no es tan estricto como STOP).
+- `FfmpegPlayer.stop()` espera a que ffmpeg termine con el lock tomado: si ffmpeg no responde, STOP
+  puede tardar unos segundos.
