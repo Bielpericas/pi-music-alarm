@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -59,6 +60,70 @@ class ConfigTest(unittest.TestCase):
                 helper.assignments(invalid)
 
 
+class ServiceIdentityTest(unittest.TestCase):
+    """Exercise the production identity resolver, including upstream defaults.
+
+    These tests work on Windows as well: only the NSS modules are substituted,
+    so they do not bypass identity() through Controller's transaction fixture.
+    """
+    def setUp(self):
+        self.controller = helper.Controller()
+        self.properties = {"DynamicUser": "no", "User": "raspotify", "Group": ""}
+        self.controller.property = mock.Mock(side_effect=self.properties.__getitem__)
+        self.pwd = mock.Mock()
+        self.grp = mock.Mock()
+        self.entries = {"root": SimpleNamespace(pw_uid=0, pw_gid=0),
+                        "raspotify": SimpleNamespace(pw_uid=991, pw_gid=992)}
+        self.pwd.getpwnam.side_effect = self.entries.__getitem__
+        self.pwd.getpwuid.side_effect = {entry.pw_uid: entry for entry in self.entries.values()}.__getitem__
+        self.grp.getgrnam.side_effect = {"audio": SimpleNamespace(gr_gid=29)}.__getitem__
+        modules = mock.patch.dict(sys.modules, {"pwd": self.pwd, "grp": self.grp})
+        modules.start()
+        self.addCleanup(modules.stop)
+
+    def test_named_static_user_uses_primary_group(self):
+        self.assertEqual(self.controller.identity(), (991, 992))
+
+    def test_upstream_empty_user_defaults_to_root(self):
+        self.properties["User"] = ""
+        self.assertEqual(self.controller.identity(), (0, 0))
+        self.pwd.getpwnam.assert_called_once_with("root")
+
+    def test_explicit_root_is_supported_without_changing_service_user(self):
+        self.properties["User"] = "root"
+        self.assertEqual(self.controller.identity(), (0, 0))
+        self.controller.property.assert_any_call("User")
+
+    def test_numeric_uid_and_gid_match_systemd_configuration(self):
+        self.properties.update(User="991", Group="29")
+        self.assertEqual(self.controller.identity(), (991, 29))
+        self.pwd.getpwuid.assert_called_once_with(991)
+        self.grp.getgrnam.assert_not_called()
+
+    def test_numeric_root_uid_is_supported(self):
+        self.properties.update(User="0", Group="0")
+        self.assertEqual(self.controller.identity(), (0, 0))
+
+    def test_explicit_named_group_is_used(self):
+        self.properties["Group"] = "audio"
+        self.assertEqual(self.controller.identity(), (991, 29))
+
+    def test_unknown_account_and_group_have_distinct_safe_codes(self):
+        for user, group, code in (("missing-user", "", "unknown_service_user"),
+                                  ("raspotify", "missing-group", "unknown_service_group")):
+            with self.subTest(code=code):
+                self.properties.update(User=user, Group=group)
+                with self.assertRaisesRegex(helper.ModeError, "^" + code + "$"):
+                    self.controller.identity()
+
+    def test_dynamic_user_is_rejected_before_resolving_transient_uid(self):
+        self.properties["DynamicUser"] = "yes"
+        with self.assertRaisesRegex(helper.ModeError, "^unsupported_dynamic_user$"):
+            self.controller.identity()
+        self.pwd.getpwnam.assert_not_called()
+        self.pwd.getpwuid.assert_not_called()
+
+
 @unittest.skipUnless(os.name == "posix" and os.geteuid() == 0, "POSIX root fixture required (use WSL -u root)")
 class TransactionTest(unittest.TestCase):
     def setUp(self):
@@ -92,6 +157,7 @@ class TransactionTest(unittest.TestCase):
         elif "show" in command:
             properties = {"EnvironmentFiles": "/etc/raspotify/conf (ignore_errors=yes)",
                           "ExecStart": "{ path=/usr/bin/librespot ; argv[]=/usr/bin/librespot ; ignore_errors=no ; }",
+                          "User": "", "Group": "", "DynamicUser": "no",
                           "MainPID": "123" if self.active else "0"}
             output = properties[command[-2].split("=", 1)[1]]
         elif "stop" in command:
@@ -124,6 +190,16 @@ class TransactionTest(unittest.TestCase):
         self.assertEqual(self.paths.backup.read_text(), CONF)
         self.assertEqual(stat.S_IMODE(self.paths.backup.stat().st_mode), 0o600)
         self.assertIn("ReadOnlyPaths=/var/cache/raspotify/credentials.json", self.paths.guard.read_text())
+        self.assert_primary_unchanged()
+
+    def test_upstream_root_identity_full_guest_cycle_without_injected_account(self):
+        self.controller.account = None  # use real NSS resolution, as on the Pi
+        self.assertEqual(self.controller.identity(), (0, 0))
+        self.assertTrue(self.controller.change(True)["enabled"])
+        info = self.paths.guest.stat()
+        self.assertEqual((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)), (0, 0, 0o700))
+        self.assertFalse(self.controller.change(False)["enabled"])
+        self.assertFalse(self.paths.guest.exists())
         self.assert_primary_unchanged()
 
     def test_guest_full_cycle_isolation_cleanup_and_active(self):

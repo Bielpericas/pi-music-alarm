@@ -168,15 +168,21 @@ class Controller:
         import pwd
         import grp
         if self.property("DynamicUser") != "no":
-            raise ModeError("unsupported_service_user")
+            # A dynamic UID can disappear/change between stop and start. It
+            # cannot own this manually managed guest directory safely.
+            raise ModeError("unsupported_dynamic_user")
+        # A system unit with no User= executes as root. Raspotify's upstream
+        # unit uses this default; preserve its existing identity and sandbox.
+        user = self.property("User") or "root"
+        group = self.property("Group")
         try:
-            entry = pwd.getpwnam(self.property("User"))
-            group = self.property("Group")
-            gid = grp.getgrnam(group).gr_gid if group else entry.pw_gid
+            entry = pwd.getpwuid(int(user)) if user.isdecimal() else pwd.getpwnam(user)
         except KeyError:
-            raise ModeError("unsupported_service_user") from None
-        if entry.pw_uid == 0:
-            raise ModeError("unsupported_service_user")
+            raise ModeError("unknown_service_user") from None
+        try:
+            gid = int(group) if group.isdecimal() else grp.getgrnam(group).gr_gid if group else entry.pw_gid
+        except KeyError:
+            raise ModeError("unknown_service_group") from None
         return entry.pw_uid, gid
 
     def read_conf(self, path):

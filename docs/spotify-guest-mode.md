@@ -25,7 +25,7 @@ SERVICE_USER=nombre_del_usuario bash deploy/install-spotify-guest-mode.sh
 ```
 
 Antes de tocar Raspotify comprueba la plantilla **instalada** en
-`/etc/raspotify/conf`, `librespot --help`, el usuario estático no-root de la
+`/etc/raspotify/conf`, `librespot --help`, la identidad estática existente de la
 unidad, su `ExecStart` y su único `EnvironmentFile`. Exige que la configuración
 principal tenga `LIBRESPOT_SYSTEM_CACHE="/var/cache/raspotify"`, username,
 discovery desactivado y el fichero principal de credenciales existente. No lo
@@ -33,6 +33,25 @@ abre. Rechaza un `ExecStart` con argumentos, fuentes de entorno adicionales,
 `DynamicUser=yes`, autenticación por token/password/OAuth en conf o asignaciones
 duplicadas/multilínea de las opciones gestionadas. Ante incompatibilidad no
 modifica la configuración ni detiene la música: informa de un código fijo.
+
+Un `User=` vacío en Raspotify significa root para una unidad del sistema y es
+válido, al igual que root explícito, un usuario estático con nombre o un UID
+numérico. El helper conserva esa identidad; no cambia el usuario ni los permisos
+del servicio web. La caché invitada se asigna a la identidad real de Raspotify.
+`DynamicUser=yes` se rechaza con `unsupported_dynamic_user`, porque su UID puede
+cambiar entre detener y arrancar y esta caché no debe asignarse a un UID obsoleto.
+
+Si una versión anterior del instalador muestra `unsupported_service_user`, se ha
+detenido en la comprobación previa a modificar Raspotify. Diagnostica sin mostrar
+credenciales con:
+
+```bash
+systemctl show raspotify.service -p User -p Group -p DynamicUser -p MainPID
+```
+
+Para `DynamicUser=no`, actualiza a la versión corregida y vuelve a ejecutar el
+instalador. No cambies usuarios, propietarios de credenciales ni opciones de
+systemd para sortear la comprobación.
 
 La correspondencia de opciones se comprueba tanto en el fichero instalado como
 en el binario, siguiendo las fuentes oficiales de
