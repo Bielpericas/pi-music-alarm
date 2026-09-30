@@ -35,6 +35,46 @@
   {% endif %}
 </section>
 
+<section class="card spotify-guests" aria-labelledby="spotify-guests-title"
+         data-spotify-guests data-status-url="{{ url_for('spotify.guest_status') }}"
+         data-mode="{{ 'unknown' if guest.enabled is none else ('guest' if guest.enabled else 'private') }}"
+         data-active="{{ 'true' if guest.active else 'false' }}">
+  <div class="spotify-guests-row">
+    <div>
+      <h2 id="spotify-guests-title">Spotify invitados</h2>
+      {% if guest.enabled is none %}
+        <p class="muted" role="status">{{ 'Cambiando el modo de Spotify…' if guest.busy else 'No se puede confirmar el modo de Spotify.' }}</p>
+      {% elif guest.enabled %}
+        <p class="muted">Las cuentas Spotify de esta Wi-Fi pueden conectarse.</p>
+      {% else %}
+        <p class="muted">Solo tu cuenta puede usar Groove.</p>
+      {% endif %}
+    </div>
+    {% if guest.available and guest.enabled is not none %}
+      <form method="post" action="{{ url_for('spotify.guest_mode') }}">
+        <input type="hidden" name="csrf" value="{{ guest_csrf }}">
+        <input type="hidden" name="enabled" value="{{ 'false' if guest.enabled else 'true' }}">
+        <button class="switch" type="submit" role="switch"
+                aria-checked="{{ 'true' if guest.enabled else 'false' }}"
+                aria-label="Spotify invitados" aria-describedby="spotify-guests-hint">
+          <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+        </button>
+      </form>
+    {% endif %}
+  </div>
+  {% if not guest.available %}
+    <p class="hint">El control de invitados aún no está disponible en este equipo.</p>
+  {% elif guest.enabled is none and not guest.busy %}
+    <form method="post" action="{{ url_for('spotify.guest_mode') }}">
+      <input type="hidden" name="csrf" value="{{ guest_csrf }}">
+      <input type="hidden" name="enabled" value="false">
+      <button class="btn btn-quiet btn-small" type="submit">Volver a privado</button>
+    </form>
+  {% endif %}
+  <p class="hint" id="spotify-guests-hint">Al apagarlo se corta la sesión del invitado.
+    Las alarmas de Spotify vuelven automáticamente a tu cuenta y desactivan este modo.</p>
+</section>
+
 {% if error %}
   <p class="flash flash-error" role="alert">{{ error }}</p>
 {% endif %}

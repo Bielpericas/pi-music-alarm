@@ -4,5 +4,7 @@
 *.sh text eol=lf
 *.template text eol=lf
 *.service text eol=lf
+deploy/*.conf text eol=lf
+deploy/spotify-mode-helper.py text eol=lf
 .env.example text eol=lf
 *.wav binary

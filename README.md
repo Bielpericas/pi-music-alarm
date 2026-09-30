@@ -712,6 +712,11 @@ Código: `spotify_player.py` (`SpotifyAlarmPlayer`) hace ese flujo usando `spoti
 
 ## Dispositivo de las alarmas Spotify (Groove)
 
+**Spotify invitados**: la página Spotify incluye un interruptor con caché temporal aislada,
+estado real de Raspotify y recuperación ante fallos. Requiere instalar el helper de systemd;
+consulta [instalación, reversión y prueba con dos cuentas](docs/spotify-guest-mode.md).
+Las alarmas Spotify recuperan automáticamente el modo privado y desactivan invitados.
+
 Al pulsar **Seleccionar** en la página Spotify se guardan el **ID y el nombre** del dispositivo (p. ej.
 «Groove», el de Raspotify). El ID de un dispositivo Spotify Connect puede cambiar (por ejemplo al
 reiniciar Raspotify), así que cada vez que una alarma Spotify empieza a sonar, también tras un snooze:

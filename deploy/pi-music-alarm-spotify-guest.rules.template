@@ -1,0 +1,9 @@
+// One service user, three fixed root helper operations. No arbitrary commands.
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        subject.user === "@USER@" && action.lookup("verb") === "start" &&
+        ["groove-spotify-mode@guest.service", "groove-spotify-mode@private.service",
+         "groove-spotify-mode@status.service"].indexOf(action.lookup("unit")) !== -1) {
+        return polkit.Result.YES;
+    }
+});

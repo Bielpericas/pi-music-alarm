@@ -2,10 +2,11 @@
 import secrets
 
 from flask import (
-    Blueprint, current_app, flash, jsonify, redirect, render_template, request, session, url_for,
+    Blueprint, abort, current_app, flash, jsonify, redirect, render_template, request, session, url_for,
 )
 
 import db
+from spotify_guest import GuestModeError
 from spotify_player import DEVICE_ID_KEY, DEVICE_NAME_KEY
 from spotify_client import (
     SEARCH_MIN_CHARS,
@@ -51,6 +52,7 @@ def report(exc, action):
 
 @bp.get("/")
 def index():
+    session.setdefault("spotify_guest_csrf", secrets.token_urlsafe(32))
     spotify = client()
     devices, error = [], None
     connected = spotify.is_configured and spotify.is_connected()
@@ -72,7 +74,39 @@ def index():
         selected_available=any(d.get("id") == selected_id for d in devices),
         redirect_uri=spotify.redirect_uri,
         error=error,
+        guest=current_app.extensions["spotify_guest"].status(),
+        guest_csrf=session["spotify_guest_csrf"],
     )
+
+
+@bp.get("/guest/status")
+def guest_status():
+    response = jsonify(current_app.extensions["spotify_guest"].status())
+    response.cache_control.no_store = True
+    return response
+
+
+@bp.post("/guest")
+def guest_mode():
+    expected = session.get("spotify_guest_csrf")
+    token = request.form.get("csrf", "")
+    if not expected or not secrets.compare_digest(expected, token):
+        abort(400)
+    if (set(request.form) != {"csrf", "enabled"}
+            or any(len(request.form.getlist(key)) != 1 for key in request.form)
+            or request.form["enabled"] not in {"true", "false"}):
+        abort(400)
+    active = current_app.extensions["playback"].active
+    if active is not None and active.alarm["source"] == "spotify":
+        flash("Espera a que termine la alarma de Spotify antes de cambiar el modo.", "error")
+        return redirect(url_for("spotify.index"))
+    try:
+        state = current_app.extensions["spotify_guest"].set_enabled(request.form["enabled"] == "true")
+    except GuestModeError as exc:
+        flash(str(exc), "error")  # only fixed, sanitized messages from our manager
+    else:
+        flash("Spotify invitados activado." if state["enabled"] else "Spotify vuelve a tu cuenta.")
+    return redirect(url_for("spotify.index"))
 
 
 @bp.get("/connect")

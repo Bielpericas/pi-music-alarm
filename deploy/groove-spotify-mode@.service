@@ -1,0 +1,15 @@
+[Unit]
+Description=Groove Spotify mode (%i)
+After=groove-spotify-boot.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/groove-spotify-mode %i
+TimeoutStartSec=180
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/raspotify /var/lib/groove-spotify /run/groove-spotify /run/systemd/system

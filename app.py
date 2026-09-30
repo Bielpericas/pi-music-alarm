@@ -16,6 +16,7 @@ import music_views
 import scheduler
 import sleep_timer_views
 import spotify_views
+from spotify_guest import NoSpotifyGuest, create_spotify_guest
 import ui
 from audio_player import create_music_player, create_player
 from bluetooth_audio import DEFAULT_SERVICE as DEFAULT_BLUETOOTH_SERVICE, NoBluetooth, create_bluetooth
@@ -190,7 +191,7 @@ def _env_int(name, default):
 
 
 def create_app(config=None, player=None, spotify=None, bluetooth=None, music=None,
-               bluetooth_manager=None):
+               bluetooth_manager=None, spotify_guest=None):
     """Crea la app. `player`, `spotify`, `bluetooth`, `music` y `bluetooth_manager`
     permiten inyectar dobles (mocks) en tests."""
     app = Flask(__name__, instance_relative_config=True)
@@ -234,7 +235,15 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     if app.config.get("MAX_CONTENT_LENGTH") is None:  # Flask lo trae a None (sin límite)
         app.config["MAX_CONTENT_LENGTH"] = (app.config["LOCAL_MUSIC_MAX_UPLOAD_MB"] + 1) * 1024 * 1024
 
-    db.init_app(app)
+    guests = spotify_guest or (NoSpotifyGuest() if app.testing else create_spotify_guest(app.config))
+    app.extensions["spotify_guest"] = guests
+    try:
+        db.init_app(app)
+    except Exception:
+        # A damaged/missing database can fail before regular reconciliation.
+        # Still attempt private mode before refusing to start the application.
+        guests.reconcile()
+        raise
     scheduler.setup_logging(app.config["ALARM_LOG"])
     app.jinja_env.filters["format_days"] = format_days
     app.extensions["audio_player"] = player or create_player(app.config)
@@ -246,6 +255,10 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         music = LocalMusic(library, track_player) if track_player else None
     app.extensions["music"] = music
     app.extensions["spotify"] = spotify or create_spotify_client(app.config)
+    # Reconcile before scheduling alarms. On Raspberry boot the root unit has
+    # already applied private mode, even if Groove or its database cannot start.
+    if spotify_guest is not None or (not app.testing and (not app.debug or is_running_from_reloader())):
+        guests.reconcile()
     # En tests nunca se toca systemd salvo que se inyecte un doble.
     app.extensions["bluetooth"] = bluetooth or (
         NoBluetooth() if app.testing else create_bluetooth(app.config))
@@ -266,6 +279,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         app.extensions["spotify"], app.config["DATABASE"],
         preferred_name=app.config["SPOTIFY_DEVICE_NAME"],
         retry_delays=app.config.get("SPOTIFY_RETRY_DELAYS", RETRY_DELAYS),
+        before_play=guests.before_alarm,
     )
     app.jinja_env.filters["describe_source"] = describe_source
     app.jinja_env.filters["describe_volume"] = describe_volume

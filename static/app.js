@@ -640,3 +640,23 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
     navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(function () {});
   });
 }
+// Guest-mode controls always reflect a fresh backend observation, including
+// changes made from another browser or when a Spotify alarm reclaims Groove.
+(function () {
+  var card = document.querySelector("[data-spotify-guests]");
+  if (!card || !window.fetch) return;
+  var submitting = false;
+  card.querySelectorAll("form").forEach(function (form) {
+    form.addEventListener("submit", function () { submitting = true; });
+  });
+  window.setInterval(function () {
+    if (submitting || document.hidden) return;
+    fetch(card.dataset.statusUrl, { cache: "no-store", credentials: "same-origin" })
+      .then(function (response) { if (!response.ok) throw new Error(); return response.json(); })
+      .then(function (state) {
+        if (state.busy) return;
+        var mode = state.enabled === null ? "unknown" : (state.enabled ? "guest" : "private");
+        if (mode !== card.dataset.mode || String(state.active) !== card.dataset.active) window.location.reload();
+      }).catch(function () {});
+  }, 15000);
+}());

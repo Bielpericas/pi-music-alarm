@@ -123,7 +123,7 @@ def choose_device(devices, saved_id, preferred_name):
 
 class SpotifyAlarmPlayer:
     def __init__(self, client, database, preferred_name="", retry_delays=RETRY_DELAYS,
-                 wait=None, ready_delays=READY_DELAYS, rng=None):
+                 wait=None, ready_delays=READY_DELAYS, rng=None, before_play=None):
         self.client = client
         self.database = database
         self.preferred_name = preferred_name  # si no hay nombre guardado (SPOTIFY_DEVICE_NAME)
@@ -134,6 +134,7 @@ class SpotifyAlarmPlayer:
         self._wait = wait or self._interrupted.wait
         self._device_id = None  # dispositivo donde empezó a sonar la última alarma
         self._rng = rng or random.Random()  # inyectable en tests
+        self.before_play = before_play
 
     def interrupt(self):
         """Corta los reintentos en curso (lo llama STOP / snooze sin esperar)."""
@@ -146,6 +147,9 @@ class SpotifyAlarmPlayer:
         try:
             if not self.client.is_configured:
                 raise SpotifyNotConfiguredError("Spotify no está configurado (.env).")
+            if self.before_play is not None:
+                self.before_play()
+            self._pause(0)  # STOP while the helper was restoring the primary session
             device_id = self._start(uri, volume)
         except PlaybackInterrupted:
             logger.info("Búsqueda del dispositivo de Spotify interrumpida")

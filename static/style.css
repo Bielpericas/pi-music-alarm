@@ -402,6 +402,11 @@ body:has(details.menu[open]) .fab { visibility: hidden; opacity: 0; pointer-even
 }
 .switch[aria-checked="true"] .switch-track { background: var(--sun); }
 .switch[aria-checked="true"] .switch-thumb { transform: translateX(20px); background: var(--sun-ink); }
+.spotify-guests-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.spotify-guests-row form { flex-shrink: 0; margin: 0; }
+.spotify-guests h2 { margin: 0 0 6px; font-size: 1rem; }
+.spotify-guests .muted { margin: 0; }
+.spotify-guests .hint { margin-top: 12px; }
 
 /* Menú de acciones: <details> nativo, sin JavaScript. */
 .menu { position: relative; }

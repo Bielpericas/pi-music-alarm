@@ -1,0 +1,16 @@
+[Unit]
+Description=Groove Spotify private boot guard
+Before=raspotify.service pi-music-alarm.service
+
+[Service]
+Type=oneshot
+User=root
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/groove-spotify-mode boot
+TimeoutStartSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/raspotify /var/lib/groove-spotify /run/groove-spotify /run/systemd/system
