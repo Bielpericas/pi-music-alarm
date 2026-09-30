@@ -1,0 +1,21 @@
+// Regla de polkit para pi-music-alarm (Groove).
+//
+// No la copies tal cual: deploy/install-raspotify-permission.sh sustituye
+// @USER@ y @UNIT@ y la instala en
+// /etc/polkit-1/rules.d/50-pi-music-alarm-raspotify.rules.
+//
+// Permite al usuario del servicio SOLO reiniciar Raspotify, que es lo que
+// hace el pre-flight de una alarma Spotify si librespot sigue activo pero
+// el dispositivo ha desaparecido de Spotify. No concede sudo, ni otras
+// unidades, ni start/stop/enable/disable.
+
+polkit.addRule(function (action, subject) {
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        subject.user === "@USER@" &&
+        action.lookup("unit") === "@UNIT@") {
+        var verb = action.lookup("verb");
+        if (verb === "restart") {
+            return polkit.Result.YES;
+        }
+    }
+});

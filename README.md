@@ -473,7 +473,8 @@ Emparejar a mano (como antes): `bluetoothctl`, y dentro `agent NoInputNoOutput`,
 - Si la app está apagada a la hora de una alarma, esa alarma **no** se recupera después.
 - El botón **Probar** ejecuta la misma acción al momento, sin tocar `last_triggered`.
 - Además hay jobs de **pre-flight** (`preflight:<id>`) y uno que los revisa cada minuto
-  (`preflight-sync`); solo observan y nunca cambian cuándo suena una alarma. Ver
+  (`preflight-sync`); observan (salvo un posible reinicio de Raspotify antes de una alarma Spotify) y
+  nunca cambian cuándo suena una alarma. Ver
   [Diagnóstico y pre-flight](#diagnóstico-y-pre-flight).
 
 ## Cómo funciona el audio
@@ -862,8 +863,9 @@ Prioridad: **ALARMA > SPOTIFY > BLUETOOTH**. La alarma siempre gana a Bluetooth:
   mano con `sudo systemctl start bluealsa-aplay` (o reinicia la Pi).
 - En Windows (desarrollo) y en los tests no se ejecuta `systemctl`.
 
-Código: `bluetooth_audio.py` es el único módulo que llama a `systemctl` (`pause()` / `resume()`);
-`AlarmPlaybackManager` lo llama al empezar a sonar y en STOP.
+Código: `bluetooth_audio.py` es el único módulo que para / arranca Bluetooth con `systemctl`
+(`pause()` / `resume()`); `AlarmPlaybackManager` lo llama al empezar a sonar y en STOP. (Aparte, el
+pre-flight puede reiniciar Raspotify: ver [Diagnóstico y pre-flight](#diagnóstico-y-pre-flight).)
 
 Código: `playback.py` (`AlarmPlaybackManager`) guarda el estado y hace start / stop / snooze con un lock
 (los hilos de waitress y de APScheduler no se pisan). El scheduler solo llama a `manager.start(alarm)`;
@@ -982,10 +984,44 @@ Pre-flight alarma 12: problemas: spotify=warning (Conectado)
 
 Si todo está bien, la última línea es `todo listo.`. Para alarmas locales no se registra Spotify.
 
-**En esta versión el pre-flight solo observa y registra.** No intenta reparar nada: no reinicia
-Raspotify ni BlueALSA, no reproduce audio y no cambia la alarma. Aunque todos los checks fallen (o el
-propio pre-flight falle), la alarma suena a su hora: la dispara el job `check_alarms` de siempre, que
-no depende del pre-flight.
+**Normalmente el pre-flight solo observa y registra**: no reproduce audio, no transfiere Spotify, no
+cambia el volumen, no toca Bluetooth/BlueALSA y no cambia la alarma. Aunque todos los checks fallen (o
+el propio pre-flight falle), la alarma suena a su hora: la dispara el job `check_alarms` de siempre,
+que no depende del pre-flight.
+
+**Única excepción: recuperación preventiva de Raspotify (alarmas Spotify).** librespot puede quedarse
+vivo (`systemctl is-active` → `active`) pero con la sesión con Spotify caída (en su log:
+`Websocket peer does not respond`): Groove deja de aparecer en Spotify hasta que se reinicia. Si en el
+pre-flight de una alarma **Spotify** Raspotify está activo, Spotify responde bien y el dispositivo de
+las alarmas **no aparece** en la lista, Groove:
+
+1. reinicia `RASPOTIFY_SERVICE` **una sola vez** (`systemctl --no-ask-password restart`, 15 s máx.);
+2. espera 5 s a que librespot vuelva a registrarse;
+3. repite los checks, de modo que el log y la página Diagnóstico muestran el estado final.
+
+```
+Pre-flight alarma 8: Raspotify está activo pero «Groove» no aparece en Spotify; intentando recuperación.
+Pre-flight alarma 8: raspotify.service reiniciado; esperando registro en Spotify.
+Pre-flight alarma 8: Spotify recuperado: «Groove» vuelve a estar disponible.
+```
+
+Si el reinicio falla o Groove sigue sin aparecer, queda un aviso (`no se pudo recuperar Spotify; se
+mantiene el respaldo local.`) y todo sigue como siempre: al sonar, la alarma reintenta Spotify y, si
+no puede, usa la música local o el WAV de emergencia, que siguen siendo la última garantía. Nunca se
+reinicia por otros problemas de Spotify (sesión no válida, sin conexión, 429, permisos/Premium, varios
+dispositivos con el mismo nombre, cuenta sin vincular), si Raspotify ya está parado o ha fallado, ni en
+alarmas locales. Nunca hay más de un reinicio por pre-flight.
+
+El reinicio necesita permiso (Groove no usa `sudo`). Instala una regla de polkit que concede a tu
+usuario **solo `restart` de `raspotify.service`**:
+
+```bash
+bash deploy/install-raspotify-permission.sh
+systemctl --no-ask-password restart raspotify   # sin sudo: no debe pedir contraseña
+```
+
+Sin ese permiso el intento falla, se registra y la alarma usa su respaldo como antes. Para quitarlo:
+`sudo rm /etc/polkit-1/rules.d/50-pi-music-alarm-raspotify.rules`.
 
 Programación:
 
@@ -1048,10 +1084,11 @@ bluetooth_manager.py # BlueZ (bluetoothctl): estado, dispositivos, ventana de em
 bluetooth_views.py  # rutas /bluetooth/... (página, estado JSON y acciones POST)
 fade.py             # fade-in de volumen (Spotify)
 health.py           # health checks de solo lectura (Diagnóstico y pre-flight)
-preflight.py        # jobs preflight:<id> antes de cada alarma y su resumen en el log
+preflight.py        # jobs preflight:<id> antes de cada alarma, su resumen en el log y la
+                    # recuperación de Raspotify (un restart) en alarmas Spotify
 diagnostics_views.py # rutas /diagnostics/... (página, Comprobar ahora, report.json)
 serve.py            # arranque de producción (waitress, red local)
-deploy/             # plantilla systemd + install-service.sh; regla polkit de Bluetooth
+deploy/             # plantilla systemd + install-service.sh; reglas polkit (Bluetooth, Raspotify)
 .env.example        # plantilla de configuración (copiar a .env)
 schema.sql          # tablas "alarms", "spotify_auth" y "settings"
 sounds/             # alarm.wav, el WAV de emergencia (no se sube a git)

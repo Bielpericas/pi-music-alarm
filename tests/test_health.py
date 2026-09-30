@@ -24,11 +24,13 @@ import scheduler  # noqa: E402
 from app import create_app  # noqa: E402
 from audio_player import AudioPlayer  # noqa: E402
 from health import (  # noqa: E402
-    ERROR, OK, SPOTIFY_TIMEOUT, WARNING, HealthChecker, HealthReport, parse_alsa_device,
+    ERROR, OK, SPOTIFY_DEVICE_MISSING, SPOTIFY_TIMEOUT, WARNING, HealthChecker, HealthReport,
+    parse_alsa_device,
 )
 from music_library import MusicLibrary  # noqa: E402
 from spotify_client import (  # noqa: E402
-    SpotifyAuthError, SpotifyConnectionError, SpotifyError, SpotifyRateLimitError,
+    SpotifyAuthError, SpotifyConnectionError, SpotifyError, SpotifyForbiddenError,
+    SpotifyRateLimitError,
 )
 from spotify_player import DEVICE_ID_KEY, DEVICE_NAME_KEY  # noqa: E402
 
@@ -405,6 +407,52 @@ class SpotifyCheckTest(HealthTestCase):
     def test_rate_limited_is_a_warning(self):
         self.spotify.get_devices.side_effect = SpotifyRateLimitError("espera", 30)
         self.assertEqual(self.check("spotify").status, WARNING)
+
+    def test_groove_missing_has_machine_readable_code(self):
+        self.spotify.get_devices.return_value = [PHONE]
+        self.assertEqual(self.check("spotify").code, SPOTIFY_DEVICE_MISSING)
+        self.spotify.get_devices.return_value = []  # cero dispositivos (el caso real)
+        self.assertEqual(self.check("spotify").code, SPOTIFY_DEVICE_MISSING)
+
+    def test_saved_id_missing_without_name_is_device_missing(self):
+        self.config["SPOTIFY_DEVICE_NAME"] = ""
+        db.write_setting(self.db_path, DEVICE_ID_KEY, "viejo-id")
+        self.spotify.get_devices.return_value = [PHONE]
+        self.assertEqual(self.check("spotify").code, SPOTIFY_DEVICE_MISSING)
+
+    def test_other_outcomes_have_no_device_missing_code(self):
+        errors = {
+            "401": SpotifyAuthError("token rechazado", 401),
+            "403": SpotifyForbiddenError("Premium requerido", 403),
+            "429": SpotifyRateLimitError("espera", 30),
+            "red": SpotifyConnectionError("timed out"),
+            "503": SpotifyError("Error de Spotify: boom", 503),
+        }
+        for label, exc in errors.items():
+            with self.subTest(label):
+                self.spotify.get_devices.side_effect = exc
+                self.assertIsNone(self.check("spotify").code)
+        self.spotify.get_devices.side_effect = None
+        with self.subTest("disponible"):
+            self.assertIsNone(self.check("spotify").code)
+        with self.subTest("conflicto"):
+            self.spotify.get_devices.return_value = [GROOVE, dict(GROOVE, id="groove-2")]
+            result = self.check("spotify")
+            self.assertEqual(result.status, WARNING)
+            self.assertIsNone(result.code)
+        with self.subTest("sin dispositivo elegido"):
+            self.config["SPOTIFY_DEVICE_NAME"] = ""
+            self.assertIsNone(self.check("spotify").code)
+        with self.subTest("sin cuenta vinculada"):
+            self.spotify.is_connected.return_value = False
+            self.assertIsNone(self.check("spotify").code)
+        with self.subTest("no configurado"):
+            self.spotify.is_configured = False
+            self.assertIsNone(self.check("spotify").code)
+
+    def test_code_is_not_exposed_in_the_report(self):
+        self.spotify.get_devices.return_value = [PHONE]
+        self.assertNotIn("code", self.checker().run().as_dict()["checks"][1])
 
 
 class BluetoothCheckTest(HealthTestCase):

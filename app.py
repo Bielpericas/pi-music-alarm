@@ -211,7 +211,8 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         BLUETOOTH_SERVICE=os.environ.get("BLUETOOTH_SERVICE", DEFAULT_BLUETOOTH_SERVICE),
         # Página Bluetooth (BlueZ: dispositivos y emparejamiento). "off" la desactiva.
         BLUEZ_MANAGEMENT=os.environ.get("BLUEZ_MANAGEMENT", "on"),
-        # Diagnóstico (solo consulta su estado): BlueALSA y Raspotify.
+        # Diagnóstico (solo consulta su estado): BlueALSA y Raspotify. El pre-flight
+        # de una alarma Spotify puede reiniciar Raspotify una vez (ver preflight.py).
         BLUEALSA_SERVICE=os.environ.get("BLUEALSA_SERVICE", DEFAULT_BLUEALSA_SERVICE),
         RASPOTIFY_SERVICE=os.environ.get("RASPOTIFY_SERVICE", DEFAULT_RASPOTIFY_SERVICE),
         # Minutos antes de cada alarma en que se ejecuta el pre-flight (0 = desactivado).
@@ -300,8 +301,10 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         playback=playback,
     )
     app.extensions["health"] = health
+    # Pre-flight: diagnóstico + una posible recuperación de Raspotify. Ver preflight.py.
     preflight = PreflightScheduler(app.config["DATABASE"], health, library=library,
-                                   minutes=app.config["ALARM_PREFLIGHT_MINUTES"])
+                                   minutes=app.config["ALARM_PREFLIGHT_MINUTES"],
+                                   raspotify_service=app.config["RASPOTIFY_SERVICE"])
     app.extensions["preflight"] = preflight
     app.extensions["scheduler"] = None
 

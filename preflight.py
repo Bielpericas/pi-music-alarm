@@ -3,12 +3,21 @@
 Cada alarma activa tiene un job de APScheduler `preflight:<id>` que se
 ejecuta ALARM_PREFLIGHT_MINUTES (5) minutos antes de su próxima hora. El
 pre-flight ejecuta los health checks (health.py), escribe un resumen en el
-log y guarda el informe como "último diagnóstico". Nada más:
+log y guarda el informe como "último diagnóstico".
 
 - No cambia la alarma ni su job: las alarmas las sigue disparando el job
   `check_alarms` del scheduler, que no sabe nada del pre-flight. Aunque el
   pre-flight falle entero (o no llegue a ejecutarse), la alarma suena.
-- No arranca, para ni repara nada, ni reproduce audio.
+- Normalmente es solo diagnóstico: no reproduce audio, no toca Spotify
+  (transferir, volumen), Bluetooth ni ningún otro servicio.
+- Única excepción, en alarmas Spotify: si Raspotify está `active` pero
+  Spotify responde y el dispositivo de las alarmas no aparece
+  (health.SPOTIFY_DEVICE_MISSING; librespot vivo con la sesión caída), se
+  reinicia RASPOTIFY_SERVICE UNA sola vez, se esperan unos segundos y se
+  repiten los checks para que el informe refleje el estado final. Nunca por
+  otros errores de Spotify (auth, red, 429, permisos, conflicto) ni si
+  Raspotify ya está parado. Si no se arregla, la alarma usa su respaldo
+  local de siempre, que sigue siendo la última garantía.
 
 Programación (`sync()`): la base de datos es la fuente de verdad. sync()
 calcula, para cada alarma activa, cuándo toca su pre-flight y deja los jobs
@@ -27,7 +36,9 @@ esa vez (nunca se ejecuta con retraso): la alarma suena con normalidad y el
 de la siguiente vez se programa cuando toque.
 """
 import logging
+import subprocess
 import threading
+import time
 from datetime import datetime, timedelta
 
 from apscheduler.triggers.cron import CronTrigger
@@ -35,13 +46,17 @@ from apscheduler.triggers.date import DateTrigger
 
 import db
 import ui
-from health import OK, WARNING
+from bluetooth_audio import DISABLED_VALUES, unit_name
+from health import OK, SPOTIFY_DEVICE_MISSING, WARNING, CommandFailed, run_command, short
+from spotify_player import DEVICE_NAME_KEY
 
 logger = logging.getLogger("alarms")
 
 JOB_PREFIX = "preflight:"
 SYNC_JOB_ID = "preflight-sync"
 DEFAULT_MINUTES = 5
+RESTART_TIMEOUT = 15   # s para `systemctl restart` de Raspotify
+RECOVERY_WAIT = 5      # s para que librespot vuelva a registrarse en Spotify
 
 # Checks que se registran según la fuente de la alarma (en este orden).
 LOCAL_CHECKS = ("audio", "local_music", "ffmpeg", "emergency", "bluetooth", "scheduler")
@@ -56,14 +71,36 @@ def relevant_checks(alarm):
     return SPOTIFY_CHECKS if alarm["source"] == "spotify" else LOCAL_CHECKS
 
 
+def needs_raspotify_recovery(alarm, report):
+    """Alarma Spotify, Raspotify activo y Spotify responde, pero sin el dispositivo."""
+    spotify = report.get("spotify")
+    return (alarm["source"] == "spotify"
+            and report.status_of("raspotify") == OK
+            and spotify is not None and spotify.code == SPOTIFY_DEVICE_MISSING)
+
+
+def restart_service(run, service, timeout=RESTART_TIMEOUT):
+    """`systemctl restart` sin shell ni sudo (polkit). Lanza CommandFailed si falla."""
+    completed = run_command(run, ["systemctl", "--no-ask-password", "restart",
+                                  unit_name(service)], timeout)
+    if completed.returncode != 0:
+        message = short(completed.stderr or "") or "sin detalles"
+        raise CommandFailed(f"código {completed.returncode}: {message}")
+
+
 class PreflightScheduler:
     def __init__(self, database, checker, library=None, minutes=DEFAULT_MINUTES,
-                 clock=datetime.now):
+                 clock=datetime.now, raspotify_service=None, run=None, sleep=time.sleep,
+                 recovery_wait=RECOVERY_WAIT):
         self.database = database
         self.checker = checker            # HealthChecker (run(trigger) -> HealthReport)
         self.library = library            # MusicLibrary: ¿existe la pista elegida?
         self.minutes = max(0, int(minutes))
         self.clock = clock
+        self.raspotify_service = raspotify_service  # None / "none": sin recuperación
+        self._process_run = run           # subprocess.run (inyectable en los tests)
+        self._sleep = sleep
+        self.recovery_wait = recovery_wait
         self.scheduler = None             # BackgroundScheduler; sin él, sync() no hace nada
         self._lock = threading.Lock()     # sync() desde rutas y desde el scheduler
 
@@ -157,8 +194,9 @@ class PreflightScheduler:
     # --- Ejecución ---
 
     def run(self, alarm_id, alarm_at=None):
-        """Job del pre-flight: checks + resumen en el log. Nunca lanza excepciones
-        y nunca toca la alarma: esta suena a su hora pase lo que pase aquí."""
+        """Job del pre-flight: checks (+ la posible recuperación de Raspotify) y
+        resumen en el log. Nunca lanza excepciones y nunca toca la alarma: esta
+        suena a su hora pase lo que pase aquí."""
         try:
             self._run(alarm_id, alarm_at)
         except Exception:
@@ -181,8 +219,51 @@ class PreflightScheduler:
             logger.exception("Pre-flight alarma %s: no se pudieron ejecutar los checks. "
                              "La alarma sonará igualmente a su hora.", alarm_id)
             return
+        if self._can_restart_raspotify() and needs_raspotify_recovery(alarm, report):
+            report = self._recover_raspotify(alarm_id, alarm, report)
         for level, line in summarize(alarm, report, self._local_music_ready(alarm, report)):
             logger.log(level, "Pre-flight alarma %s: %s", alarm_id, line)
+
+    # --- Recuperación de Raspotify (una vez por pre-flight) ---
+
+    def _can_restart_raspotify(self):
+        service = str(self.raspotify_service or "")
+        return service.strip().lower() not in DISABLED_VALUES
+
+    def _recover_raspotify(self, alarm_id, alarm, report):
+        """Un único restart de Raspotify y nueva comprobación. Devuelve el informe
+        final (el original si algo falla). Nunca lanza; sin bucles ni reintentos."""
+        try:
+            return self._restart_and_recheck(alarm_id, alarm, report)
+        except Exception:
+            logger.exception("Pre-flight alarma %s: error en la recuperación de Raspotify; "
+                             "se mantiene el respaldo local.", alarm_id)
+            return report
+
+    def _restart_and_recheck(self, alarm_id, alarm, report):
+        device = db.read_setting(self.database, DEVICE_NAME_KEY)
+        label = f"«{device}»" if device else "el dispositivo de las alarmas"
+        unit = unit_name(str(self.raspotify_service))
+        logger.warning("Pre-flight alarma %s: Raspotify está activo pero %s no aparece en "
+                       "Spotify; intentando recuperación.", alarm_id, label)
+        try:
+            restart_service(self._process_run or subprocess.run, self.raspotify_service)
+        except CommandFailed as exc:
+            logger.warning("Pre-flight alarma %s: no se pudo reiniciar %s (%s); se mantiene "
+                           "el respaldo local.", alarm_id, unit, short(exc))
+            return report
+        logger.info("Pre-flight alarma %s: %s reiniciado; esperando registro en Spotify.",
+                    alarm_id, unit)
+        self._sleep(self.recovery_wait)
+        final = self.checker.run(trigger=f"Pre-flight de «{alarm['name']}» "
+                                         "(tras reiniciar Raspotify)")
+        if final.status_of("spotify") == OK:
+            logger.info("Pre-flight alarma %s: Spotify recuperado: %s vuelve a estar "
+                        "disponible.", alarm_id, label)
+        else:
+            logger.warning("Pre-flight alarma %s: no se pudo recuperar Spotify; se mantiene "
+                           "el respaldo local.", alarm_id)
+        return final
 
     def _local_music_ready(self, alarm, report):
         """¿Puede sonar la música local de esta alarma? (texto o None)."""

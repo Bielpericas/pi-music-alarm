@@ -3,6 +3,8 @@
 Se usa un BackgroundScheduler real arrancado en pausa: los jobs se crean,
 mueven y borran de verdad, pero nunca se ejecutan solos. El reloj es fijo y
 los health checks son dobles (nada de systemctl, ffmpeg, ALSA ni Spotify).
+La recuperación de Raspotify usa el HealthChecker real con los dobles de
+test_health (FakeRun para systemctl) y un `sleep` falso.
 """
 import os
 import sqlite3
@@ -22,9 +24,17 @@ import db  # noqa: E402
 import scheduler  # noqa: E402
 from app import create_app  # noqa: E402
 from audio_player import AudioPlayer  # noqa: E402
-from health import ERROR, OK, WARNING, CheckResult, HealthReport  # noqa: E402
+from health import (  # noqa: E402
+    ERROR, OK, SPOTIFY_DEVICE_MISSING, WARNING, CheckResult, HealthReport,
+)
 from music_library import MusicLibrary  # noqa: E402
 from preflight import SYNC_JOB_ID, PreflightScheduler, job_id  # noqa: E402
+from spotify_client import (  # noqa: E402
+    SpotifyAuthError, SpotifyConnectionError, SpotifyError, SpotifyForbiddenError,
+    SpotifyRateLimitError,
+)
+from spotify_player import DEVICE_NAME_KEY  # noqa: E402
+from tests.test_health import GROOVE, PHONE, HealthTestCase, service_states  # noqa: E402
 
 MONDAY_0700 = datetime(2026, 9, 28, 7, 0)
 WEEKDAYS = ["0", "1", "2", "3", "4"]
@@ -371,6 +381,174 @@ class PreflightRunTest(unittest.TestCase):
         before = alarm_rows(self.db_path)
         self.logs(alarm_id)
         self.assertEqual(alarm_rows(self.db_path), before)
+
+    def test_device_missing_code_without_service_does_not_restart(self):
+        """Sin RASPOTIFY_SERVICE (o "none") no hay recuperación: `run` nunca se usa."""
+        self.checker.result = HealthReport(MONDAY_0700, "test", tuple(
+            CheckResult(c.id, c.name, WARNING, c.summary, code=SPOTIFY_DEVICE_MISSING)
+            if c.id == "spotify" else c for c in report().results))
+        for service in (None, "none"):
+            with self.subTest(service=service):
+                self.preflight.raspotify_service = service
+                self.checker.triggers.clear()
+                self.logs(self.add_alarm())  # subprocess.run está bloqueado: fallaría
+                self.assertEqual(len(self.checker.triggers), 1)
+
+
+RESTART = ["systemctl", "--no-ask-password", "restart", "raspotify.service"]
+
+
+class RaspotifyRecoveryTest(HealthTestCase):
+    """Recuperación de Raspotify en el pre-flight, con el HealthChecker real.
+
+    systemctl, ffmpeg y bluetoothctl pasan por FakeRun, Spotify es un doble y
+    `sleep` un Mock: nada de procesos ni esperas reales.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.add_track()
+        db.write_setting(self.db_path, DEVICE_NAME_KEY, "Groove")
+        self.run.responses[tuple(RESTART)] = ("", 0)
+        self.spotify.get_devices.return_value = [PHONE]  # Groove ha desaparecido
+        self.sleep = mock.Mock()
+        self.health = self.checker()
+        self.preflight = PreflightScheduler(
+            self.db_path, self.health, library=MusicLibrary(self.music_dir),
+            clock=lambda: MONDAY_0700, raspotify_service="raspotify", run=self.run,
+            sleep=self.sleep)
+
+    def add_alarm(self, source="spotify"):
+        uri = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M" if source == "spotify" else None
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.execute("INSERT INTO alarms (name, time, days, enabled, source, spotify_uri)"
+                           " VALUES ('Trabajo', '07:30', '0,1,2,3,4', 1, ?, ?)", (source, uri))
+        conn.commit()
+        conn.close()
+        return cur.lastrowid
+
+    def logs(self, alarm_id):
+        with self.assertLogs("alarms", "INFO") as captured:
+            self.preflight.run(alarm_id, "2026-09-28T07:30")
+        return "\n".join(captured.output)
+
+    def restarts(self):
+        return [c for c in self.run.commands() if c[2] != "is-active" and c[0] == "systemctl"]
+
+    def assert_no_restart(self, output):
+        self.assertEqual(self.restarts(), [])
+        self.sleep.assert_not_called()
+        self.assertNotIn("intentando recuperación", output)
+
+    def test_restart_once_and_device_comes_back(self):
+        self.spotify.get_devices.side_effect = [[PHONE], [PHONE, GROOVE]]
+        output = self.logs(self.add_alarm())
+        self.assertEqual(self.restarts(), [RESTART])
+        self.sleep.assert_called_once_with(5)
+        self.assertEqual(self.spotify.get_devices.call_count, 2)  # nueva comprobación
+        self.assertIn("Pre-flight alarma 1: Raspotify está activo pero «Groove» no aparece en "
+                      "Spotify; intentando recuperación.", output)
+        self.assertIn("Pre-flight alarma 1: raspotify.service reiniciado; esperando registro "
+                      "en Spotify.", output)
+        self.assertIn("Pre-flight alarma 1: Spotify recuperado: «Groove» vuelve a estar "
+                      "disponible.", output)
+        # El resumen y la página Diagnóstico reflejan el estado final, no el aviso inicial.
+        self.assertIn("(spotify): audio=ok spotify=ok raspotify=ok", output)
+        self.assertNotIn("Spotify puede fallar", output)
+        self.assertIn("todo listo.", output)
+        self.assertEqual(self.health.last.status_of("spotify"), OK)
+        self.assertEqual(self.health.last.trigger,
+                         "Pre-flight de «Trabajo» (tras reiniciar Raspotify)")
+
+    def test_device_still_missing_keeps_warning_and_restarts_only_once(self):
+        output = self.logs(self.add_alarm())
+        self.assertEqual(self.restarts(), [RESTART])
+        self.sleep.assert_called_once_with(5)
+        self.assertEqual(self.spotify.get_devices.call_count, 2)
+        self.assertIn("no se pudo recuperar Spotify; se mantiene el respaldo local.", output)
+        self.assertIn("spotify=warning", output)
+        self.assertIn("Spotify puede fallar; hay respaldo: música local", output)
+        self.assertEqual(self.health.last.status_of("spotify"), WARNING)
+
+    def test_restart_failure_never_breaks_the_preflight_or_the_alarm(self):
+        failures = {"código": ("", 1), "timeout": subprocess.TimeoutExpired("systemctl", 15),
+                    "sin systemctl": FileNotFoundError()}
+        alarm_id = self.add_alarm()
+        for label, response in failures.items():
+            with self.subTest(label):
+                self.run.calls.clear()
+                self.spotify.get_devices.reset_mock()
+                self.run.responses[tuple(RESTART)] = response
+                output = self.logs(alarm_id)
+                self.assertEqual(self.restarts(), [RESTART])       # un único intento
+                self.sleep.assert_not_called()                      # ni espera...
+                self.assertEqual(self.spotify.get_devices.call_count, 1)  # ...ni recheck
+                self.assertIn("no se pudo reiniciar raspotify.service", output)
+                self.assertIn("spotify=warning", output)            # resumen del informe inicial
+        run_kwargs = next(kw for cmd, kw in self.run.calls if cmd == RESTART)
+        self.assertEqual(run_kwargs["timeout"], 15)
+        manager = mock.Mock()
+        fired = scheduler.check_alarms(self.db_path, datetime(2026, 9, 28, 7, 30), manager=manager)
+        self.assertEqual(fired, ["Trabajo"])
+        manager.start.assert_called_once()
+
+    def test_unexpected_error_during_recovery_is_contained(self):
+        self.sleep.side_effect = RuntimeError("boom")
+        with self.assertLogs("alarms", "INFO") as captured:
+            self.preflight.run(self.add_alarm(), "2026-09-28T07:30")  # no lanza
+        output = "\n".join(captured.output)
+        self.assertEqual(self.restarts(), [RESTART])
+        self.assertIn("error en la recuperación de Raspotify", output)
+        self.assertIn("spotify=warning", output)  # se registra el informe original
+
+    def test_other_spotify_errors_never_restart(self):
+        errors = {
+            "401": SpotifyAuthError("token rechazado", 401),
+            "red/timeout": SpotifyConnectionError("No se pudo conectar con Spotify: timed out"),
+            "429": SpotifyRateLimitError("espera", 30),
+            "403 Premium/permisos": SpotifyForbiddenError("Premium requerido", 403),
+            "API caída": SpotifyError("Error de Spotify: boom", 503),
+        }
+        alarm_id = self.add_alarm()
+        for label, exc in errors.items():
+            with self.subTest(label):
+                self.spotify.get_devices.side_effect = exc
+                self.assert_no_restart(self.logs(alarm_id))
+
+    def test_device_conflict_never_restarts(self):
+        self.spotify.get_devices.return_value = [GROOVE, dict(GROOVE, id="groove-2")]
+        output = self.logs(self.add_alarm())
+        self.assertIn("spotify=warning", output)
+        self.assert_no_restart(output)
+
+    def test_unlinked_account_never_restarts(self):
+        self.spotify.is_connected.return_value = False
+        self.assert_no_restart(self.logs(self.add_alarm()))
+
+    def test_raspotify_not_active_never_restarts(self):
+        for state in ("inactive", "failed", "activating"):
+            with self.subTest(state=state):
+                self.run.responses.update(service_states(raspotify=state))
+                output = self.logs(self.add_alarm())
+                self.assertIn("raspotify=", output)
+                self.assertNotIn("raspotify=ok", output)
+                self.assert_no_restart(output)
+
+    def test_local_alarm_never_restarts(self):
+        self.assert_no_restart(self.logs(self.add_alarm(source="local")))
+
+    def test_recovery_does_not_touch_playback_the_alarm_or_other_services(self):
+        self.spotify.get_devices.side_effect = [[PHONE], [PHONE, GROOVE]]
+        alarm_id = self.add_alarm()
+        before = alarm_rows(self.db_path)
+        self.logs(alarm_id)
+        self.assertEqual(alarm_rows(self.db_path), before)
+        for method in ("play", "pause", "transfer_playback", "set_volume", "disconnect"):
+            getattr(self.spotify, method).assert_not_called()
+        # Único comando con efectos: el restart de Raspotify (el resto son consultas).
+        effects = [c for c in self.run.commands()
+                   if c[0] == "systemctl" and c[2] != "is-active"]
+        self.assertEqual(effects, [RESTART])
 
 
 if __name__ == "__main__":

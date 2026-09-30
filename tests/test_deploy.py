@@ -70,9 +70,29 @@ class SystemdTemplateTest(unittest.TestCase):
         self.assertIn("ExecStart=@APP_DIR@/.venv/bin/python @APP_DIR@/serve.py", text)
 
     def test_linux_files_have_lf_endings(self):
-        for name in ("deploy/install-service.sh", "deploy/pi-music-alarm.service.template"):
+        for name in ("deploy/install-service.sh", "deploy/pi-music-alarm.service.template",
+                     "deploy/install-raspotify-permission.sh",
+                     "deploy/pi-music-alarm-raspotify.rules.template"):
             with self.subTest(name=name):
                 self.assertNotIn(b"\r\n", (ROOT / name).read_bytes())
+
+
+class RaspotifyPolkitRuleTest(unittest.TestCase):
+    def test_rule_only_allows_restart_of_one_unit_for_one_user(self):
+        text = (ROOT / "deploy" / "pi-music-alarm-raspotify.rules.template").read_text(
+            encoding="utf-8")
+        rule = text[text.index("polkit.addRule"):]
+        self.assertIn('subject.user === "@USER@"', rule)
+        self.assertIn('action.lookup("unit") === "@UNIT@"', rule)
+        self.assertIn('verb === "restart"', rule)
+        for verb in ("start", "stop", "enable", "disable"):
+            self.assertNotIn(f'"{verb}"', rule)
+
+    def test_install_script_targets_raspotify(self):
+        text = (ROOT / "deploy" / "install-raspotify-permission.sh").read_text(encoding="utf-8")
+        self.assertIn('SERVICE="${RASPOTIFY_SERVICE:-raspotify}"', text)
+        self.assertIn("50-pi-music-alarm-raspotify.rules", text)
+        self.assertNotIn("sudo systemctl", text)
 
 
 if __name__ == "__main__":

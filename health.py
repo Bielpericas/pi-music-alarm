@@ -16,6 +16,8 @@ Reglas:
   el conjunto tiene un presupuesto total (`total_timeout`).
 - Nada sensible en los resultados: ni tokens, ni client secret, ni variables
   de entorno, ni rutas completas (solo nombres de fichero o de servicio).
+- Algunos resultados llevan un `code` machine-readable para que otros módulos
+  (el pre-flight) reaccionen sin interpretar textos. Aquí nunca se actúa.
 
 Estados:
 - ok: funciona como se espera.
@@ -52,7 +54,13 @@ from spotify_client import (
     SpotifyForbiddenError,
     SpotifyRateLimitError,
 )
-from spotify_player import DEVICE_ID_KEY, DEVICE_NAME_KEY, DeviceConflict, choose_device
+from spotify_player import (
+    DEVICE_ID_KEY,
+    DEVICE_NAME_KEY,
+    DeviceConflict,
+    DeviceUnavailable,
+    choose_device,
+)
 
 logger = logging.getLogger("alarms")
 
@@ -66,6 +74,10 @@ DEFAULT_RASPOTIFY_SERVICE = "raspotify"
 DEFAULT_BLUEALSA_SERVICE = "bluealsa"
 ASOUND_DIR = "/proc/asound"
 MAX_TEXT = 160           # los mensajes de error se recortan
+
+# CheckResult.code: Spotify responde bien, pero el dispositivo de las alarmas
+# no está en /me/player/devices (no es auth, red, 429, permisos ni conflicto).
+SPOTIFY_DEVICE_MISSING = "device_missing"
 
 # Orden en la página (y en el log del pre-flight).
 CHECK_ORDER = ("audio", "spotify", "raspotify", "local_music", "ffmpeg", "emergency",
@@ -89,6 +101,7 @@ class CheckResult:
     status: str                  # OK, WARNING o ERROR
     summary: str                 # una línea: "Disponible", "4 pistas"...
     details: tuple = ()          # líneas cortas y seguras (opcional)
+    code: str = None             # motivo machine-readable (p. ej. SPOTIFY_DEVICE_MISSING)
 
     def as_dict(self):
         return {"id": self.id, "name": self.name, "status": self.status,
@@ -122,9 +135,9 @@ class HealthReport:
                 "checks": [r.as_dict() for r in self.results]}
 
 
-def result(check_id, status, summary, *details):
+def result(check_id, status, summary, *details, code=None):
     return CheckResult(check_id, CHECK_NAMES.get(check_id, check_id), status, summary,
-                       tuple(d for d in details if d))
+                       tuple(d for d in details if d), code)
 
 
 def short(text):
@@ -509,9 +522,11 @@ class HealthChecker:
         except DeviceConflict:
             return result("spotify", WARNING, "Conectado",
                           f"Hay varios dispositivos llamados {label}.")
-        except SpotifyError:
+        except DeviceUnavailable:
+            # Spotify responde bien pero el dispositivo no está en la lista: el
+            # único caso que el pre-flight intenta arreglar reiniciando Raspotify.
             return result("spotify", WARNING, "Conectado",
-                          f"{label} no aparece ahora en Spotify.")
+                          f"{label} no aparece ahora en Spotify.", code=SPOTIFY_DEVICE_MISSING)
         return result("spotify", OK, "Conectado", f"{label} disponible")
 
     # --- Bluetooth ---
