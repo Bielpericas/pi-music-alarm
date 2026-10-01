@@ -784,9 +784,15 @@ Al sonar:
 Las alarmas locales guardan estos valores pero todavía no los usan (el WAV suena igual que antes).
 
 **Raspotify / librespot**: para que Spotify pueda cambiar el volumen, en `/etc/raspotify/conf` **no**
-uses `LIBRESPOT_VOLUME_CTRL=fixed` (con `fixed` el volumen no cambia). Con el valor por defecto (`log`)
-el volumen es logarítmico: 20 % suena bastante bajo, lo cual va bien para despertar suave. Tras
-cambiar la configuración: `sudo systemctl restart raspotify`.
+uses `LIBRESPOT_VOLUME_CTRL=fixed` (con `fixed` el volumen no cambia). Groove usa
+`LIBRESPOT_VOLUME_CTRL=cubic` y `LIBRESPOT_ENABLE_VOLUME_NORMALISATION=` (activada): así un mismo
+porcentaje suena parecido por Spotify directo y por Bluetooth desde la app de Spotify de otro equipo
+(que también usa una curva no lineal y normaliza por defecto). Con `linear` el 50 % solo baja 6 dB y
+Spotify directo suena bastante más fuerte que por Bluetooth; con `log` (rango de 60 dB por defecto)
+el 50 % baja 30 dB y queda muy bajo. Orientativo con `cubic`: 30 % ≈ -31 dB, 50 % ≈ -18 dB,
+80 % ≈ -6 dB, así que el volumen final de las alarmas suele ir bien entre 70 y 90 %. El volumen
+físico (`amixer sget Speaker`) es común a Spotify, Bluetooth y alarmas. Tras cambiar la
+configuración: `sudo systemctl restart raspotify`.
 
 Código: `fade.py` (`fade_plan` calcula los pasos; `VolumeFade` los aplica en un único hilo que se
 cancela con un `Event`, sin timers huérfanos). `AlarmPlaybackManager` crea y cancela el fade;
