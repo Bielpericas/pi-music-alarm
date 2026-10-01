@@ -111,6 +111,10 @@ class FakeBluetoothctl:
         self.pairable = value == "on"
         return f"Changing pairable {value} succeeded\n"
 
+    def _discoverable_timeout(self, value):
+        self.discoverable_timeout = int(value)
+        return "Changing discoverable-timeout succeeded\n"
+
     def _connect(self, mac):
         if mac not in self.in_range:
             return (f"Attempting to connect to {mac}\n"
@@ -139,11 +143,12 @@ class FakeAgent:
 
     instances = []
 
-    def __init__(self, ctl, on_output, register=True, default=True):
+    def __init__(self, ctl, on_output, register=True, default=True, apply_settings=True):
         self.ctl = ctl
         self.on_output = on_output
         self.register = register
         self.default = default
+        self.apply_settings = apply_settings
         self.sent = []
         self.buffer = ""
         self.started = self.stopped = False
@@ -167,7 +172,8 @@ class FakeAgent:
         self.sent.append(command)
         if command == "default-agent" and self.default:
             self.emit("Default agent request successful\n")
-        elif command in ("pairable on", "pairable off", "discoverable on", "discoverable off"):
+        elif self.apply_settings and command in (
+                "pairable on", "pairable off", "discoverable on", "discoverable off"):
             setting, value = command.split()
             setattr(self.ctl, setting, value == "on")
         elif command == "quit":
@@ -358,6 +364,55 @@ class DeviceActionsTest(ManagerTestCase):
 # --- Ventana de emparejamiento -------------------------------------------------------
 
 class PairingTest(ManagerTestCase):
+    def test_visibility_does_not_depend_on_agent_processing_batched_input(self):
+        # Simula líneas del pty que el agente no llega a procesar.
+        # El agente está registrado y vivo, pero no aplica órdenes del adaptador.
+        self.agent_options = {"apply_settings": False}
+        session, created = self.manager.start_pairing()
+        self.assertTrue(created and session.active)
+        self.assertTrue(self.ctl.discoverable and self.ctl.pairable)
+        self.assertTrue(self.agent.alive())
+        self.assertEqual(self.agent.sent, ["default-agent"])
+        settings = [v for v in self.ctl.verbs()
+                    if v.startswith(("discoverable-timeout", "pairable", "discoverable"))]
+        self.assertEqual(settings, ["discoverable-timeout 120", "pairable on", "discoverable on"])
+        self.assertEqual(self.ctl.discoverable_timeout, 120)
+        self.assertFalse([v for v in self.ctl.verbs() if v.startswith("disconnect")])
+        self.manager.cancel_pairing()
+        self.assertTrue(self.manager.session.private_again)
+        self.assertFalse(self.ctl.discoverable or self.ctl.pairable)
+
+    def test_rejected_visibility_command_reports_cause_and_closes_window(self):
+        self.ctl.fail["pairable"] = (1, "Failed to set pairable: org.bluez.Error.NotPermitted\n")
+        with self.assertLogs("alarms", "WARNING") as logs, self.assertRaises(BluetoothError) as ctx:
+            self.manager.start_pairing()
+        self.assertIn("org.bluez.Error.NotPermitted", ctx.exception.detail)
+        self.assertIn("org.bluez.Error.NotPermitted", "\n".join(logs.output))
+        self.assertEqual(self.manager.session.state, bm.FAILED)
+        self.assertTrue(self.agent.stopped)
+        self.assertFalse(self.ctl.discoverable or self.ctl.pairable)
+        self.assertNotIn("discoverable on", self.ctl.verbs())
+
+    def test_timeout_must_be_confirmed_before_enabling_visibility(self):
+        self.ctl.fail["discoverable-timeout"] = (1, "Failed to set discoverable timeout\n")
+        with self.assertLogs("alarms", "WARNING"), self.assertRaises(BluetoothError):
+            self.manager.start_pairing()
+        self.assertNotIn("pairable on", self.ctl.verbs())
+        self.assertNotIn("discoverable on", self.ctl.verbs())
+        self.assertFalse(self.ctl.discoverable or self.ctl.pairable)
+        self.assertTrue(self.agent.stopped)
+        self.assertTrue(self.ctl.devices[PHONE]["connected"])
+
+    def test_discoverable_failure_undoes_partial_pairable_activation(self):
+        self.ctl.fail["discoverable"] = (1, "Failed to set discoverable\n")
+        with self.assertLogs("alarms", "WARNING"), self.assertRaises(BluetoothError):
+            self.manager.start_pairing()
+        self.assertIn("pairable on", self.ctl.verbs())
+        self.assertIn("pairable off", self.ctl.verbs())
+        self.assertFalse(self.ctl.discoverable or self.ctl.pairable)
+        self.assertTrue(self.agent.stopped)
+        self.assertTrue(self.ctl.devices[PHONE]["connected"])
+
     def start(self):
         session, created = self.manager.start_pairing()
         self.assertTrue(created)
@@ -369,8 +424,10 @@ class PairingTest(ManagerTestCase):
         self.assertEqual(session.started_at, START)
         self.assertEqual(session.expires_at, START + timedelta(minutes=2))
         self.assertEqual(self.manager.session_view()["remaining"], 120)
-        self.assertEqual(self.agent.sent, ["default-agent", "discoverable-timeout 120",
-                                           "pairable on", "discoverable on"])
+        self.assertEqual(self.agent.sent, ["default-agent"])
+        self.assertIn("discoverable-timeout 120", self.ctl.verbs())
+        self.assertIn("pairable on", self.ctl.verbs())
+        self.assertIn("discoverable on", self.ctl.verbs())
         self.assertTrue(self.ctl.discoverable and self.ctl.pairable)
         self.assertTrue(self.agent.started)
 
@@ -686,6 +743,20 @@ class BluetoothPageTest(ManagerTestCase):
         self.assertIn('getAttribute("data-confirm")', source)
 
     # Acciones
+
+    def test_normal_connections_and_page_reads_do_not_disconnect_or_create_timer(self):
+        # Conexión iniciada desde el dispositivo, seguida de consultas de la web.
+        self.ctl.devices[TABLET]["connected"] = True
+        self.manager.tick()
+        self.assertIn(f'action="/bluetooth/devices/{TABLET}/disconnect"', self.html())
+        self.client.get("/bluetooth/status")
+        self.client.get("/sleep-timer/status")
+        # También la conexión explícita desde el botón Conectar.
+        self.ctl.devices[TABLET]["connected"] = False
+        self.post(f"/bluetooth/devices/{TABLET}/connect")
+        self.assertTrue(self.ctl.devices[TABLET]["connected"])
+        self.assertIsNone(self.app.extensions["sleep_timer"].timer)
+        self.assertFalse([c for c in self.ctl.calls if c[1] == "disconnect"])
 
     def test_actions_via_post(self):
         text = self.post(f"/bluetooth/devices/{TABLET}/connect")

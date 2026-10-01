@@ -214,6 +214,36 @@ class CreateTest(SleepTimerTestCase):
 
 
 class CancelAndStatusTest(SleepTimerTestCase):
+    def test_cancelled_bluetooth_timer_cannot_disconnect_after_reconnection(self):
+        self.sleep.start("bluetooth", 15, mac=PHONE)
+        self.jobs.jobs[0][2].side_effect = RuntimeError("job already queued")
+        self.sleep.cancel()
+        self.ctl.devices[PHONE]["connected"] = False
+        self.bt.connect(PHONE)
+        self.clock.advance(minutes=15)
+        self.ctl.calls.clear()
+        self.assertIsNone(self.jobs.fire(0))
+        self.assert_nothing_touched()
+        self.assertTrue(self.ctl.devices[PHONE]["connected"])
+
+    def test_replaced_bluetooth_generation_cannot_disconnect_either_target(self):
+        self.ctl.devices[TABLET]["connected"] = True
+        self.sleep.start("bluetooth", 15, mac=PHONE)
+        self.jobs.jobs[0][2].side_effect = RuntimeError("job already queued")
+        current = self.sleep.start("bluetooth", 30, mac=TABLET)
+        cancel_current = self.sleep._cancel_job
+        self.clock.advance(minutes=15)
+        self.assertIsNone(self.jobs.fire(0))
+        self.assertIs(self.sleep.timer, current)
+        self.assertIs(self.sleep._cancel_job, cancel_current)
+        self.assert_nothing_touched()
+        self.clock.advance(minutes=15)
+        self.assertEqual(self.jobs.fire(1), "expired")
+        self.assertTrue(self.ctl.devices[PHONE]["connected"])
+        self.assertFalse(self.ctl.devices[TABLET]["connected"])
+        self.assertEqual([v for v in self.bt_verbs() if v.startswith("disconnect")],
+                         [f"disconnect {TABLET}"])
+
     def test_cancel(self):
         self.sleep.start("spotify", 30)
         with self.assertLogs("alarms", "INFO") as logs:
@@ -314,6 +344,16 @@ class ExpireSpotifyTest(SleepTimerTestCase):
 
 
 class ExpireBluetoothTest(SleepTimerTestCase):
+    def test_completed_timer_cannot_disconnect_a_later_connection(self):
+        self.sleep.start("bluetooth", 15, mac=PHONE)
+        self.clock.advance(minutes=15)
+        self.assertEqual(self.jobs.fire(), "expired")
+        self.bt.connect(PHONE)
+        self.ctl.calls.clear()
+        self.assertIsNone(self.jobs.fire())
+        self.assert_nothing_touched()
+        self.assertTrue(self.ctl.devices[PHONE]["connected"])
+
     def test_disconnects_but_keeps_pairing_and_trust(self):
         self.sleep.start("bluetooth", 45, mac=PHONE)
         self.ctl.calls.clear()

@@ -472,10 +472,15 @@ class BluetoothManager:
                 self._session = PairingSession(
                     started_at=now, expires_at=now + timedelta(seconds=self.pairing_seconds),
                     deadline=self._clock() + self.pairing_seconds)
-                # Red de seguridad: BlueZ oculta a Groove solo, aunque Groove muera.
-                agent.send(f"discoverable-timeout {self.pairing_seconds}")
-                agent.send("pairable on")
-                agent.send("discoverable on")
+                # El pty se reserva para el agente y sus respuestas. Escribir varias
+                # líneas en él no confirma que readline las haya ejecutado: la
+                # ventana podía fallar con pairable/discoverable todavía en off.
+                # Aplicar cada ajuste por separado permite esperar su respuesta y
+                # registrar un rechazo real de BlueZ. El agente sigue vivo.
+                # Red de seguridad: fijar el límite ANTES de hacer visible a Groove.
+                self._ctl_checked("discoverable-timeout", str(self.pairing_seconds))
+                self._ctl_checked("pairable", "on")
+                self._ctl_checked("discoverable", "on")
                 if not self._wait_visible():
                     raise BluetoothError("No se pudo hacer visible a Groove.",
                                          "pairable/discoverable no se activaron")

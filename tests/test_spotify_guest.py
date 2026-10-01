@@ -12,6 +12,8 @@ from app import create_app
 from audio_player import AudioPlayer
 from spotify_client import SpotifyClient
 from spotify_guest import GuestModeError, SETTING, SpotifyGuest, create_spotify_guest
+from tests.test_bluetooth_manager import FakeBluetoothctl, PHONE, TABLET, no_real_processes
+from tests.test_sleep_timer import bluez, Clock, FakeScheduler
 
 
 class FakeHelper:
@@ -197,6 +199,34 @@ class GuestViewsTest(GuestFixture):
         self.assertEqual(response.status_code, 200)
         self.assertIn('aria-checked="true"', response.get_data(as_text=True))
         self.assertEqual(db.read_setting(self.database, SETTING), "true")
+
+    def test_guest_changes_leave_bluetooth_connections_and_sleep_timer_untouched(self):
+        no_real_processes(self)
+        ctl = FakeBluetoothctl()
+        ctl.add(PHONE, "Móvil", connected=True)
+        ctl.add(TABLET, "Tablet")
+        bt = bluez(ctl)
+        self.app.extensions["bluetooth_manager"] = bt
+        sleep = self.app.extensions["sleep_timer"]
+        sleep.bluetooth = bt
+        sleep._clock = clock = Clock()
+        sleep.schedule_once = jobs = FakeScheduler()
+        timer = sleep.start("bluetooth", 15, mac=PHONE)
+        for enabled in ("true", "false"):
+            with self.subTest(enabled=enabled):
+                ctl.calls.clear()
+                self.client.post("/spotify/guest", data={"csrf": self.csrf, "enabled": enabled})
+                self.assertEqual(ctl.calls, [])
+                self.assertIs(sleep.timer, timer)
+                self.client.post(f"/bluetooth/devices/{TABLET}/connect")
+                self.client.get("/bluetooth/")
+                self.assertTrue(ctl.devices[PHONE]["connected"])
+                self.assertTrue(ctl.devices[TABLET]["connected"])
+                self.assertFalse([c for c in ctl.calls if c[1] == "disconnect"])
+        clock.advance(minutes=15)
+        self.assertEqual(jobs.fire(), "expired")
+        self.assertFalse(ctl.devices[PHONE]["connected"])
+        self.assertTrue(ctl.devices[TABLET]["connected"])
 
     def test_invalid_input_or_csrf_never_touches_helper(self):
         for data in ({"enabled": "true"}, {"csrf": "evil", "enabled": "true"},

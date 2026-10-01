@@ -397,6 +397,9 @@ Cómo funciona por dentro (`bluetooth_manager.py`, el único módulo que habla c
   el agente contesta «yes» a las confirmaciones de esa ventana (y solo de esa ventana).
 - Groove activa `pairable on` y `discoverable on`, y fija `discoverable-timeout 120` para que
   **BlueZ vuelva a ocultar a Groove por sí mismo** aunque Groove se cayera.
+  Estos ajustes se ejecutan uno a uno con `bluetoothctl`, comprobando cada respuesta y después
+  el estado del adaptador. El agente persistente autoriza el emparejamiento; las órdenes de
+  visibilidad no dependen de que su terminal procese varias líneas seguidas.
 - Un vigilante en el servidor revisa cada segundo el plazo y cada 2 s los emparejados. Se considera
   nuevo lo que no estaba emparejado al abrir la ventana, o lo que BlueZ anuncia como emparejado
   durante ella (`[CHG] Device … Paired: yes`). **Solo en esos se confía automáticamente**; nunca
