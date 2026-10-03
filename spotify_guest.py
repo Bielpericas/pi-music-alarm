@@ -11,6 +11,7 @@ import sys
 import threading
 
 import db
+from startup_budget import budget_lock, run_budgeted
 
 logger = logging.getLogger(__name__)
 SETTING = "spotify_guest_mode"
@@ -56,9 +57,9 @@ class SpotifyGuest:
         if mode not in {"guest", "private", "status"}:
             raise ValueError("invalid mode")
         try:
-            result = self.run(["systemctl", "--no-ask-password", "start",
-                               f"groove-spotify-mode@{mode}.service"],
-                              capture_output=True, text=True, timeout=200)
+            result = run_budgeted(["systemctl", "--no-ask-password", "start",
+                                   f"groove-spotify-mode@{mode}.service"],
+                                  self.run, 200, capture_output=True, text=True)
         except (OSError, subprocess.SubprocessError):
             raise GuestModeError("No se pudo comprobar o cambiar el modo de Spotify.") from None
         if result.returncode:
@@ -139,7 +140,7 @@ class SpotifyGuest:
 
     def before_alarm(self):
         """Spotify alarms reclaim the primary account; local alarms need no changes."""
-        with self._lock:
+        with budget_lock(self._lock):
             state = self._observe()
             if state["enabled"] is False and state["active"]:
                 return

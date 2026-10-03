@@ -731,10 +731,16 @@ reiniciar Raspotify), así que cada vez que una alarma Spotify empieza a sonar, 
 2. Si el **ID guardado** está en la lista, se usa.
 3. Si no, se busca el dispositivo cuyo **nombre** coincide (sin distinguir mayúsculas). Si aparece, se
    usa y se **guarda su ID nuevo**.
-4. Si no aparece, se **reintenta**: inmediato, +2 s, +4 s y +6 s (12 s como máximo). Sirve para
+4. Si no aparece, se **reintenta**: inmediato, +2 s, +4 s y +6 s, dentro del plazo global. Sirve para
    Raspotify recién reiniciado o aún no anunciado y para fallos de red puntuales. Un 404 al transferir
    también se reintenta.
-5. Si tras los intentos no aparece, se registra el motivo y suena el **WAV local**.
+5. Si tras los intentos no aparece o se agota el plazo global de **20 s**, se registra el motivo y
+   se usa la música local o el WAV de respaldo. El plazo incluye invitados, token, DNS, peticiones
+   y esperas; se configura con `ALARM_SPOTIFY_START_TIMEOUT_SECONDS`.
+
+Si una orden de reproducción pudo llegar a Spotify pero se pierde la respuesta, se intenta confirmar
+una pausa durante hasta 2 s adicionales. Si falla, se conserva **parada pendiente**, sin superponer
+el respaldo. Detalles y pruebas: [arranque y recuperación Spotify](docs/spotify-startup-recovery.md).
 
 Después: transferir la reproducción a ese dispositivo → volumen inicial → reproducir → fade-in. Nunca se
 usa "el dispositivo que estaba sonando": si por la noche Spotify sonaba en una tablet, la alarma se
@@ -1006,7 +1012,7 @@ cambia el volumen, no toca Bluetooth/BlueALSA y no cambia la alarma. Aunque todo
 el propio pre-flight falle), la alarma suena a su hora: la dispara el job `check_alarms` de siempre,
 que no depende del pre-flight.
 
-**Única excepción: recuperación preventiva de Raspotify (alarmas Spotify).** librespot puede quedarse
+**Recuperación preventiva del pre-flight (alarmas Spotify).** librespot puede quedarse
 vivo (`systemctl is-active` → `active`) pero con la sesión con Spotify caída (en su log:
 `Websocket peer does not respond`): Groove deja de aparecer en Spotify hasta que se reinicia. Si en el
 pre-flight de una alarma **Spotify** Raspotify está activo, Spotify responde bien y el dispositivo de
@@ -1024,10 +1030,17 @@ Pre-flight alarma 8: Spotify recuperado: «Groove» vuelve a estar disponible.
 
 Si el reinicio falla o Groove sigue sin aparecer, queda un aviso (`no se pudo recuperar Spotify; se
 mantiene el respaldo local.`) y todo sigue como siempre: al sonar, la alarma reintenta Spotify y, si
-no puede, usa la música local o el WAV de emergencia, que siguen siendo la última garantía. Nunca se
-reinicia por otros problemas de Spotify (sesión no válida, sin conexión, 429, permisos/Premium, varios
+no puede, usa la música local o el WAV de emergencia. El pre-flight no reinicia por otros problemas
+de Spotify (sesión no válida, sin conexión, 429, permisos/Premium, varios
 dispositivos con el mismo nombre, cuenta sin vincular), si Raspotify ya está parado o ha fallado, ni en
 alarmas locales. Nunca hay más de un reinicio por pre-flight.
+
+**Arranque antes que el router:** hay además una recuperación automática cada 30 s, aunque no haya
+alarmas programadas. Tras dos respuestas válidas de Spotify, si Groove sigue ausente o Raspotify está
+`failed`/`inactive`, reinicia el servicio habilitado. Si Groove ya aparece y el servicio está activo,
+no lo toca. Permite tres intentos por episodio, separados al menos 60 s, y se aplaza durante alarmas,
+mantenimiento o modo invitados. Está activada en Linux por defecto; `RASPOTIFY_NETWORK_RECOVERY=off`
+la desactiva. Reutiliza el mismo permiso de polkit. Véanse [límites y pruebas](docs/spotify-startup-recovery.md).
 
 El reinicio necesita permiso (Groove no usa `sudo`). Instala una regla de polkit que concede a tu
 usuario **solo `restart` de `raspotify.service`**:
@@ -1103,6 +1116,9 @@ fade.py             # fade-in de volumen (Spotify)
 health.py           # health checks de solo lectura (Diagnóstico y pre-flight)
 preflight.py        # jobs preflight:<id> antes de cada alarma, su resumen en el log y la
                     # recuperación de Raspotify (un restart) en alarmas Spotify
+spotify_recovery.py # recuperación acotada tras arranque antes que el router/caída de red
+startup_budget.py   # plazo compartido y cancelación del intento Spotify
+spotify_transport.py # HTTPS/DNS acotados durante el intento de arranque
 diagnostics_views.py # rutas /diagnostics/... (página, Comprobar ahora, report.json)
 serve.py            # arranque de producción (waitress, red local)
 deploy/             # plantilla systemd + install-service.sh; reglas polkit (Bluetooth, Raspotify)
@@ -1128,7 +1144,7 @@ alarmas antiguas), `volume_start`, `volume_end`, `fade_minutes` `max_duration_mi
   worker*: iniciado pero **pendiente** (ver [docs/https-spotify-oauth.md](docs/https-spotify-oauth.md)).
 - Protección CSRF si la app se expone fuera de la red local (y asegurarse de que `SECRET_KEY` está
   definida en `.env`: sin ella se usa `dev`).
-- **Recuperación tras una parada pendiente**, implementada localmente y pendiente de prueba en la Pi:
+- **Recuperación tras una parada pendiente**, probada en la Pi según confirmación del usuario del 03/10/2026:
   hasta cinco reintentos de STOP cada 30 s; las alarmas rechazadas quedan reservadas durante dos
   minutos y muestran su resultado en la web. Al agotar el margen, una alarma de una vez queda
   desactivada con el motivo visible; las recurrentes conservan su siguiente horario.

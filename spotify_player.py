@@ -24,14 +24,17 @@ arreglan esperando (autenticación, configuración) no se reintentan.
 `interrupt()` corta cualquier espera al momento (STOP / snooze).
 
 Nunca lanza excepciones: devuelve True si Spotify aceptó la orden y False si
-algo falló (el motivo queda en el log), para que se use el WAV de respaldo.
+algo falló (el motivo queda en el log). Si PLAY quedó incierto y la pausa falla,
+start_stop_pending conserva el control antes de permitir el respaldo local.
 `stop()` pausa el dispositivo donde empezó a sonar.
 """
 import logging
 import random
 import threading
+import time
 
 import db
+from startup_budget import StartupBudget, StartupCancelled, StartupExpired, budget_lock, current_budget
 from spotify_client import (
     SpotifyAuthError,
     SpotifyError,
@@ -51,6 +54,8 @@ RETRY_DELAYS = (0, 2, 4, 6)
 # Tras transferir: comprobar que el dispositivo está activo y no restringido
 # antes de reproducir (inmediato, +1 s, +1 s). Si no lo está, se prueba igual.
 READY_DELAYS = (0, 1, 1)
+DEFAULT_START_TIMEOUT = 20
+STOP_CLEANUP_TIMEOUT = 2
 
 # Errores que no se arreglan esperando unos segundos: no se reintentan.
 # (Un 429 que llega hasta aquí ya trae un Retry-After largo: tampoco.)
@@ -123,7 +128,8 @@ def choose_device(devices, saved_id, preferred_name):
 
 class SpotifyAlarmPlayer:
     def __init__(self, client, database, preferred_name="", retry_delays=RETRY_DELAYS,
-                 wait=None, ready_delays=READY_DELAYS, rng=None, before_play=None):
+                 wait=None, ready_delays=READY_DELAYS, rng=None, before_play=None,
+                 start_timeout=DEFAULT_START_TIMEOUT, clock=time.monotonic, service_lock=None):
         self.client = client
         self.database = database
         self.preferred_name = preferred_name  # si no hay nombre guardado (SPOTIFY_DEVICE_NAME)
@@ -135,31 +141,63 @@ class SpotifyAlarmPlayer:
         self._device_id = None  # dispositivo donde empezó a sonar la última alarma
         self._rng = rng or random.Random()  # inyectable en tests
         self.before_play = before_play
+        self.start_timeout = max(1, float(start_timeout))
+        self._clock = clock
+        self.service_lock = service_lock or threading.RLock()
+        self.start_stop_pending = False
+        self._play_sent = False
 
     def interrupt(self):
         """Corta los reintentos en curso (lo llama STOP / snooze sin esperar)."""
         self._interrupted.set()
 
-    def play(self, uri, volume=None):
+    def play_interruptible(self, uri, volume=None, interrupted=None):
+        return self.play(uri, volume=volume, cancelled=interrupted)
+
+    def play(self, uri, volume=None, cancelled=None):
         """Resolver dispositivo -> transferir -> (esperar a que esté activo) ->
         volumen inicial -> reproducir, con reintentos."""
         self._interrupted.clear()
+        self.start_stop_pending = False
+        self._play_sent = False
+        budget = StartupBudget(self.start_timeout, self._interrupted, self._clock, cancelled)
         try:
-            if not self.client.is_configured:
-                raise SpotifyNotConfiguredError("Spotify no está configurado (.env).")
-            if self.before_play is not None:
-                self.before_play()
-            self._pause(0)  # STOP while the helper was restoring the primary session
-            device_id = self._start(uri, volume)
-        except PlaybackInterrupted:
+            with budget.activate(), budget_lock(self.service_lock):
+                if not self.client.is_configured:
+                    raise SpotifyNotConfiguredError("Spotify no está configurado (.env).")
+                if self.before_play is not None:
+                    self.before_play()
+                self._pause(0)
+                device_id = self._start(uri, volume)
+        except (PlaybackInterrupted, StartupCancelled):
             logger.info("Búsqueda del dispositivo de Spotify interrumpida")
+            self._silence_uncertain_start()
+            return False
+        except StartupExpired:
+            logger.warning("Spotify: agotado el plazo total de %s s; se intenta el respaldo local",
+                           self.start_timeout)
+            self._silence_uncertain_start()
             return False
         except Exception as exc:  # SpotifyError, ValueError o cualquier imprevisto
             logger.warning("Spotify falló (%s): %s", uri, exc)
+            self._silence_uncertain_start()
             return False
         self._device_id = device_id
         logger.info("Spotify reproduciendo %s", uri)
         return True
+
+    def _silence_uncertain_start(self):
+        if not self._play_sent:
+            return
+        # Una orden ya enviada no se puede retirar de Spotify. Confirmar pausa
+        # antes del fallback; si falla, conservar control y reintentos de STOP.
+        try:
+            with StartupBudget(STOP_CLEANUP_TIMEOUT, clock=self._clock).activate(), budget_lock(self.service_lock):
+                self.start_stop_pending = not self.stop()
+        except (StartupCancelled, StartupExpired):
+            self.start_stop_pending = True
+        if self.start_stop_pending:
+            logger.warning("Arranque Spotify incierto: no se confirmó la pausa; parada pendiente")
 
     def stop(self):
         """Pausa el dispositivo donde sonó la alarma. Nunca lanza excepciones."""
@@ -247,7 +285,10 @@ class SpotifyAlarmPlayer:
         if kind not in ("album", "playlist"):
             return None
         try:
+            self._pause(0)
             total = self.client.get_track_count(uri)
+        except (StartupCancelled, StartupExpired, PlaybackInterrupted):
+            raise
         except Exception as exc:
             logger.warning("No se pudo saber cuántas pistas tiene %s (%s); "
                            "se empieza por la primera", uri, exc)
@@ -263,20 +304,40 @@ class SpotifyAlarmPlayer:
         """Reproduce; con posición aleatoria si la hay. Si Spotify rechaza la
         posición (400), empieza por la primera pista en vez de fallar."""
         if position is None:
-            self.client.play(device_id, uri=uri)
+            self._send_play(device_id, uri)
             return
         try:
-            self.client.play(device_id, uri=uri, offset=position)
+            self._send_play(device_id, uri, offset=position)
         except SpotifyError as exc:
             if exc.status != 400:
                 raise
             logger.warning("Spotify rechazó la pista inicial %d (%s); se empieza por la primera",
                            position + 1, exc)
-            self.client.play(device_id, uri=uri)
+            self._send_play(device_id, uri)
+
+    def _send_play(self, device_id, uri, **kwargs):
+        self._pause(0)
+        self._device_id = device_id
+        previously_sent = self._play_sent
+        self._play_sent = True
+        try:
+            self.client.play(device_id, uri=uri, **kwargs)
+        except SpotifyError as exc:
+            if exc.status in (400, 401, 403, 404, 429):
+                self._play_sent = previously_sent  # el rechazo no aclara una orden anterior incierta
+            raise
+        self._pause(0)
 
     def _pause(self, seconds):
         """Espera interrumpible: STOP / snooze la cortan al momento."""
-        if (seconds and self._wait(seconds)) or self._interrupted.is_set():
+        budget = current_budget()
+        if budget is not None:
+            budget.remaining()
+            if seconds:
+                budget.wait(seconds, self._wait)
+        elif seconds and self._wait(seconds):
+            raise PlaybackInterrupted("interrumpido")
+        if self._interrupted.is_set():
             raise PlaybackInterrupted("interrumpido")
 
     def _wait_until_ready(self, device_id, label):

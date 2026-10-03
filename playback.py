@@ -106,11 +106,16 @@ def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=
         if spotify is not None and alarm["spotify_uri"]:
             try:
                 uri = alarm["spotify_uri"]
-                started = spotify.play(uri) if volume is None else spotify.play(uri, volume=volume)
+                if callable(getattr(type(spotify), "play_interruptible", None)):
+                    started = spotify.play_interruptible(uri, volume=volume, interrupted=interrupted)
+                else:
+                    started = spotify.play(uri) if volume is None else spotify.play(uri, volume=volume)
                 if started:
                     return "spotify"
             except Exception:
                 logger.exception("Spotify falló al disparar «%s»", name)
+        if spotify is not None and getattr(spotify, "start_stop_pending", False) is True:
+            return "stop_pending"
         if interrupted is not None and interrupted.is_set():
             logger.info("Arranque de «%s» cancelado antes de sonar", name)
             return "cancelled"
@@ -271,18 +276,22 @@ class AlarmPlaybackManager:
             # Si la anterior sonaba en Spotify y la nueva no la ha reemplazado
             # allí, se pausa. (Pausar y luego reproducir en Spotify podría
             # llegar desordenado, por eso no se pausa si la nueva es Spotify.)
-            if previous is not None and previous.via == "spotify" and via != "spotify":
+            if previous is not None and previous.via == "spotify" and via not in ("spotify", "stop_pending"):
                 self._stop_spotify()
 
-            status = via if via in ("failed", "cancelled") else "playing"
+            status = via if via in ("failed", "cancelled", "stop_pending") else "playing"
+            if via == "stop_pending":
+                via = "spotify"  # conservar el dispositivo incierto para reintentar pausa
             self._active = ActiveAlarm(alarm, started_at, via, manual, snoozes, status)
-            if via == "spotify" and plan:
+            if status == "playing" and via == "spotify" and plan:
                 self._start_fade(plan)
             if status == "playing":
                 self._schedule_auto_stop(alarm, started_at, token)
             elif status == "failed":
                 self._resume_bluetooth()
-            return via
+            elif status == "stop_pending":
+                self._schedule_stop_retry()
+            return "stop_pending" if status == "stop_pending" else via
 
     def _local_ended(self, token, kind, ok):
         """Final del proceso, fuera de su lock. Ignora avisos de alarmas anteriores."""

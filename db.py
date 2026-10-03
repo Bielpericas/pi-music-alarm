@@ -1,5 +1,6 @@
 """Acceso a SQLite con la librería estándar (sin ORM, para ahorrar RAM en la Pi)."""
 import sqlite3
+from startup_budget import current_budget
 from pathlib import Path
 
 import click
@@ -34,7 +35,8 @@ DEFAULT_MAX_DURATION = 30
 
 
 def connect(database):
-    conn = sqlite3.connect(database)
+    budget = current_budget()
+    conn = sqlite3.connect(database, timeout=budget.timeout(5) if budget is not None else 5)
     conn.row_factory = sqlite3.Row
     return conn
 

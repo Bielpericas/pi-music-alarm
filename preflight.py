@@ -91,7 +91,7 @@ def restart_service(run, service, timeout=RESTART_TIMEOUT):
 class PreflightScheduler:
     def __init__(self, database, checker, library=None, minutes=DEFAULT_MINUTES,
                  clock=datetime.now, raspotify_service=None, run=None, sleep=time.sleep,
-                 recovery_wait=RECOVERY_WAIT):
+                 recovery_wait=RECOVERY_WAIT, service_lock=None, playback=None):
         self.database = database
         self.checker = checker            # HealthChecker (run(trigger) -> HealthReport)
         self.library = library            # MusicLibrary: ¿existe la pista elegida?
@@ -101,6 +101,8 @@ class PreflightScheduler:
         self._process_run = run           # subprocess.run (inyectable en los tests)
         self._sleep = sleep
         self.recovery_wait = recovery_wait
+        self.service_lock = service_lock
+        self.playback = playback
         self.scheduler = None             # BackgroundScheduler; sin él, sync() no hace nada
         self._lock = threading.Lock()     # sync() desde rutas y desde el scheduler
 
@@ -233,12 +235,21 @@ class PreflightScheduler:
     def _recover_raspotify(self, alarm_id, alarm, report):
         """Un único restart de Raspotify y nueva comprobación. Devuelve el informe
         final (el original si algo falla). Nunca lanza; sin bucles ni reintentos."""
+        if self.playback is not None and self.playback.active is not None:
+            logger.info("Pre-flight alarma %s: recuperación aplazada por alarma activa", alarm_id)
+            return report
+        if self.service_lock is not None and not self.service_lock.acquire(blocking=False):
+            logger.info("Pre-flight alarma %s: recuperación aplazada por mantenimiento Spotify", alarm_id)
+            return report
         try:
             return self._restart_and_recheck(alarm_id, alarm, report)
         except Exception:
             logger.exception("Pre-flight alarma %s: error en la recuperación de Raspotify; "
                              "se mantiene el respaldo local.", alarm_id)
             return report
+        finally:
+            if self.service_lock is not None:
+                self.service_lock.release()
 
     def _restart_and_recheck(self, alarm_id, alarm, report):
         device = db.read_setting(self.database, DEVICE_NAME_KEY)

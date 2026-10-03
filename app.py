@@ -30,6 +30,7 @@ from spotify_client import (
     MAX_META_NAME, MAX_META_SUBTITLE, clean_text, create_spotify_client, parse_spotify_uri,
 )
 from spotify_player import RETRY_DELAYS, SpotifyAlarmPlayer
+from spotify_recovery import SpotifyNetworkRecovery
 
 DEFAULT_SOUND = Path(__file__).parent / "sounds" / "alarm.wav"
 DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
@@ -219,6 +220,9 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         RASPOTIFY_SERVICE=os.environ.get("RASPOTIFY_SERVICE", DEFAULT_RASPOTIFY_SERVICE),
         # Minutos antes de cada alarma en que se ejecuta el pre-flight (0 = desactivado).
         ALARM_PREFLIGHT_MINUTES=_env_int("ALARM_PREFLIGHT_MINUTES", DEFAULT_PREFLIGHT_MINUTES),
+        ALARM_SPOTIFY_START_TIMEOUT_SECONDS=max(1, _env_int("ALARM_SPOTIFY_START_TIMEOUT_SECONDS", 20)),
+        RASPOTIFY_NETWORK_RECOVERY=os.environ.get("RASPOTIFY_NETWORK_RECOVERY", "on").strip().lower()
+                                  not in {"off", "none", "0", "false"},
         SPOTIFY_CLIENT_ID=os.environ.get("SPOTIFY_CLIENT_ID", ""),
         SPOTIFY_CLIENT_SECRET=os.environ.get("SPOTIFY_CLIENT_SECRET", ""),
         # Nombre del dispositivo de las alarmas si aún no se ha elegido ninguno
@@ -281,6 +285,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         preferred_name=app.config["SPOTIFY_DEVICE_NAME"],
         retry_delays=app.config.get("SPOTIFY_RETRY_DELAYS", RETRY_DELAYS),
         before_play=guests.before_alarm,
+        start_timeout=app.config["ALARM_SPOTIFY_START_TIMEOUT_SECONDS"],
     )
     app.jinja_env.filters["describe_source"] = describe_source
     app.jinja_env.filters["describe_volume"] = describe_volume
@@ -319,8 +324,17 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     # Pre-flight: diagnóstico + una posible recuperación de Raspotify. Ver preflight.py.
     preflight = PreflightScheduler(app.config["DATABASE"], health, library=library,
                                    minutes=app.config["ALARM_PREFLIGHT_MINUTES"],
-                                   raspotify_service=app.config["RASPOTIFY_SERVICE"])
+                                   raspotify_service=app.config["RASPOTIFY_SERVICE"],
+                                   service_lock=app.extensions["spotify_alarm"].service_lock,
+                                   playback=playback)
     app.extensions["preflight"] = preflight
+    network_recovery = SpotifyNetworkRecovery(
+        app.config["DATABASE"], app.extensions["spotify"], playback,
+        app.extensions["spotify_alarm"], guests, service=app.config["RASPOTIFY_SERVICE"],
+        preferred_name=app.config["SPOTIFY_DEVICE_NAME"],
+        enabled=app.config["RASPOTIFY_NETWORK_RECOVERY"],
+    )
+    app.extensions["spotify_network_recovery"] = network_recovery
     app.extensions["scheduler"] = None
 
     # En modo debug Flask arranca dos procesos (vigilante + servidor); el
@@ -339,6 +353,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         app.extensions["scheduler"] = health.scheduler = background
         # Pre-flight: jobs preflight:<id>, independientes del job de las alarmas.
         preflight.start(background)
+        network_recovery.start(background)
 
     @app.context_processor
     def inject_playback():

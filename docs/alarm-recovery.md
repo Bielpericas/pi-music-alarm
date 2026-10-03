@@ -1,6 +1,6 @@
 # Recuperación de alarmas tras una parada fallida
 
-Implementado en el código local el 2 de octubre de 2026. Pendiente de despliegue y validación física en la Raspberry.
+Implementado el 2 de octubre de 2026 y versionado en el commit local `3744ebf`. El 3 de octubre el usuario confirma que ha hecho las pruebas de la mejora 1 en la Raspberry y que funciona. No se han aportado resultados individuales ni SHA de la Pi; véase [HE-20 del historial](../historial/historialcodex.md#he-20).
 
 ## Política
 
@@ -22,13 +22,15 @@ La tabla `alarm_triggers` guarda **un único último intento por alarma**, con h
 
 Los rechazos confirmados sobreviven al reinicio y pueden reintentarse si todavía están dentro del margen. Al iniciar el único scheduler de producción, un intento que quedó `starting` se marca `interrupted`: pudo haber iniciado sonido antes del corte, por lo que no se repite automáticamente. Las alarmas de una vez se desactivan en ese caso y la interfaz muestra que no se confirmó el resultado. Las recurrentes conservan su siguiente horario.
 
-Los reintentos de STOP y el estado de reproducción permanecen en memoria, igual que los temporizadores existentes. Esta mejora no añade recuperación general de minutos perdidos ni limita las peticiones de Spotify; esos cambios pertenecen a las siguientes mejoras.
+Los reintentos de STOP y el estado de reproducción permanecen en memoria, igual que los temporizadores existentes. Esta mejora no añade recuperación general de minutos perdidos. El parche posterior del 03/10 limita el intento Spotify y recupera Raspotify tras un router tardío; véase [arranque y recuperación Spotify](spotify-startup-recovery.md).
 
 ## Validación local
 
 Suite completa ejecutada en Windows el 02/10/2026: **764 tests, sin fallos, 20 omitidos** por sus requisitos de plataforma. Incluye 19 pruebas nuevas de recuperación, límites, cancelación, snoozes, reinicios, concurrencia y actualización del estado web. `git diff --check` también pasó. Los reproductores de estas pruebas están simulados; el resultado no acredita sonido ni permisos reales en la Raspberry.
 
-## Validación pendiente en la Pi
+## Plan de pruebas en la Pi
+
+El usuario ha confirmado el funcionamiento tras realizar las pruebas. Los escenarios siguientes se conservan como procedimiento para repetirlas y registrar resultados concretos.
 
 1. Iniciar una alarma Spotify, simular un fallo temporal al pausar y comprobar `stop_pending`. Recuperar la conectividad y verificar que un reintento automático confirma la parada y devuelve Bluetooth.
 2. Repetir con auto-stop, sin pulsar STOP después del fallo.

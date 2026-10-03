@@ -26,6 +26,8 @@ import urllib.parse
 import urllib.request
 
 import db
+from startup_budget import budget_lock, current_budget
+from spotify_transport import deadline_transport
 
 logger = logging.getLogger("alarms")
 
@@ -329,7 +331,7 @@ class SpotifyClient:
             )
 
     def _access_token(self, force_refresh=False):
-        with self._lock:
+        with budget_lock(self._lock):
             tokens = self.tokens.load()
             if tokens is None:
                 raise SpotifyAuthError("No hay ninguna cuenta de Spotify vinculada.")
@@ -430,12 +432,20 @@ class SpotifyClient:
                 if not retried_rate and error.retry_after <= MAX_RETRY_WAIT:
                     retried_rate = True
                     logger.warning("Spotify 429: reintento en %ss", error.retry_after)
-                    self._sleep(error.retry_after)
+                    budget = current_budget()
+                    if budget is None:
+                        self._sleep(error.retry_after)
+                    else:
+                        budget.wait(error.retry_after, None if self._sleep is time.sleep else self._sleep)
                     continue
                 raise error
             raise _api_error(status, content)
 
     def _send(self, method, url, headers, body, timeout=None):
+        budget = current_budget()
+        request_timeout = timeout or TIMEOUT
+        if budget is not None:
+            request_timeout = budget.timeout(request_timeout)
         remaining = self._blocked_until - self._clock()
         if remaining > 0:
             raise SpotifyRateLimitError(
@@ -443,7 +453,12 @@ class SpotifyClient:
                 int(remaining) + 1,
             )
         try:
-            return self._transport(method, url, headers, body, timeout or TIMEOUT)
+            if budget is not None and self._transport is urllib_transport:
+                return deadline_transport(method, url, headers, body, request_timeout, budget)
+            response = self._transport(method, url, headers, body, request_timeout)
+            if budget is not None:
+                budget.remaining()
+            return response
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
             raise SpotifyConnectionError(f"No se pudo conectar con Spotify: {reason}") from exc
