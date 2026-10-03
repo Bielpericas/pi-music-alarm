@@ -13,8 +13,7 @@ servicio (sin sudo, que además `NoNewPrivileges` bloquearía). Una regla de
 polkit concede a ese usuario solo start/stop de esta unidad (ver README).
 
 Reglas:
-- Nunca lanza excepciones: un fallo de systemctl se registra y la alarma
-  suena igual.
+- Nunca lanza excepciones; devuelve si se confirmó la parada o restauración.
 - Solo se vuelve a arrancar si lo paró Groove: si el usuario lo tenía parado,
   sigue parado.
 - `pause()` es idempotente: si una alarma sustituye a otra, Bluetooth sigue
@@ -24,6 +23,7 @@ import logging
 import subprocess
 import sys
 import threading
+from startup_budget import current_budget
 
 logger = logging.getLogger("alarms")
 
@@ -48,11 +48,16 @@ class BluetoothAudio:
         self._run = run
         self.timeout = timeout
         self._paused = False  # True si lo ha parado Groove y hay que devolverlo
+        self._restore_needed = False  # conservar intención incluso si start/stop falla
         self._lock = threading.Lock()
 
     @property
     def paused(self):
         return self._paused
+
+    @property
+    def restore_pending(self):
+        return self._restore_needed
 
     def is_active(self):
         """True / False, o None si no se ha podido saber."""
@@ -67,32 +72,37 @@ class BluetoothAudio:
         return None
 
     def pause(self):
-        """Para el reproductor antes de una alarma. Devuelve True si queda parado por Groove."""
+        """True solo si la salida Bluetooth se confirmó libre."""
         with self._lock:
-            if self._paused:
-                return True  # otra alarma ya lo había parado: nada que hacer
             active = self.is_active()
             if active is False:
+                self._paused = self._restore_needed
                 logger.info("Bluetooth (%s) no estaba activo: nada que pausar", self.unit)
-                return False
+                return True
+            if active is True:
+                self._restore_needed = True
             # Activo, o estado desconocido: se intenta parar igualmente.
-            self._paused = True
-            result = self._systemctl("stop")
-            if result is not None and result.returncode == 0:
+            self._systemctl("stop")
+            if self.is_active() is False:
+                self._paused = True
                 logger.info("Bluetooth pausado por alarma (%s detenido)", self.unit)
-            else:
-                logger.warning("No se pudo detener %s; la alarma suena igualmente",
-                               self.unit)
-            return True
+                return True
+            self._paused = False
+            logger.warning("No se pudo detener %s; la salida Bluetooth no está confirmada libre",
+                           self.unit)
+            return False
 
     def resume(self):
         """Vuelve a arrancar el reproductor si lo paró Groove."""
         with self._lock:
-            if not self._paused:
-                return False
-            self._paused = False
-            result = self._systemctl("start")
-            if result is not None and result.returncode == 0:
+            if not self._restore_needed:
+                self._paused = False
+                return True  # nada que restaurar; no arrancar lo que ya estaba parado
+            self._systemctl("start")
+            state = self._systemctl("is-active", quiet=True)
+            if state is not None and (state.stdout or "").strip() in {"active", "reloading"}:
+                self._paused = False
+                self._restore_needed = False
                 logger.info("Bluetooth disponible de nuevo (%s arrancado)", self.unit)
                 return True
             logger.warning("No se pudo volver a arrancar %s. Arráncalo con: "
@@ -103,8 +113,10 @@ class BluetoothAudio:
         """Ejecuta systemctl; devuelve el CompletedProcess o None si ni se pudo lanzar."""
         command = ["systemctl", "--no-ask-password", verb, self.unit]
         try:
+            budget = current_budget()
+            timeout = budget.timeout(self.timeout) if budget is not None else self.timeout
             result = self._run(command, capture_output=True, text=True,
-                               timeout=self.timeout, check=False)
+                               timeout=timeout, check=False)
         except FileNotFoundError:
             logger.warning("systemctl no está disponible: no se gestiona Bluetooth")
             return None
@@ -126,12 +138,13 @@ class NoBluetooth:
 
     unit = None
     paused = False
+    restore_pending = False
 
     def pause(self):
-        return False
+        return True
 
     def resume(self):
-        return False
+        return True
 
 
 def create_bluetooth(config, platform=None):

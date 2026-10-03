@@ -229,7 +229,9 @@ class FfmpegPlayer:
             return True
         except Exception:
             logger.exception("Error esperando a ffmpeg")
-            self._terminate(process)
+            if not self._terminate(process):
+                with self._lock:
+                    self._process = process
             return False
         # Terminó enseguida: no está sonando nada.
         logger.error("ffmpeg terminó al empezar (código %s) con %s: %s",

@@ -39,6 +39,7 @@ dispositivo desaparecido, ya desconectado...) se registran y el temporizador
 termina sin reintentos.
 """
 import logging
+from contextlib import nullcontext
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -239,6 +240,12 @@ class SleepTimerManager:
     # --- Vencimiento ---
 
     def _fire(self, generation):
+        # Orden único: reproducción -> sleep timer, también al empezar alarma.
+        gate = getattr(self.playback, "_lock", None)
+        with gate if gate is not None else nullcontext():
+            return self._fire_locked(generation)
+
+    def _fire_locked(self, generation):
         """Job del scheduler. Nunca lanza: todo fallo se registra."""
         try:
             with self._lock:
@@ -286,6 +293,8 @@ class SleepTimerManager:
             logger.warning("Sleep timer finalizado sin pausar Spotify: %s", exc)
             return FAILED, "No se pudo pausar Spotify (error de Spotify)."
         logger.info("Sleep timer finalizado: Spotify pausado («%s»)", timer.target_name)
+        if self.playback is not None and callable(getattr(type(self.playback), "manual_spotify_paused", None)):
+            self.playback.manual_spotify_paused(timer.target_id)
         return EXPIRED, "Spotify pausado por el temporizador."
 
     def _expire_bluetooth(self, timer):

@@ -58,6 +58,14 @@
       {% endif %}
     {% endwith %}
     {% block content %}{% endblock %}
+    {% if bluetooth_restore_pending %}
+      <section class="flash flash-error" role="status">
+        <p>La devolución del receptor Bluetooth está pendiente. Los reintentos automáticos tienen un límite.</p>
+        <form method="post" action="{{ url_for('restore_bluetooth') }}">
+          <button class="btn btn-quiet" type="submit">Reintentar Bluetooth</button>
+        </form>
+      </section>
+    {% endif %}
   </main>
 
   <nav class="nav nav-bottom" aria-label="Secciones">

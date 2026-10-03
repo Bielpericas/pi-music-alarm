@@ -878,13 +878,15 @@ Prioridad: **ALARMA > SPOTIFY > BLUETOOTH**. La alarma siempre gana a Bluetooth:
 - Solo se vuelve a arrancar si lo paró Groove: si lo tenías parado, sigue parado.
 - Solo se para y arranca el **reproductor**: el móvil sigue emparejado y conectado; nunca se
   desconecta, desempareja ni cambia la visibilidad.
-- Si `systemctl` falla (sin permiso, sin BlueALSA, tiempo agotado), se registra en el log y **la
-  alarma suena igual**.
+- Si no se confirma la salida Bluetooth libre (permiso, servicio o tiempo agotado), **la
+  alarma queda pendiente** antes de abrir otra fuente, con motivo visible y reintentos limitados de STOP.
 - En el log: `Bluetooth pausado por alarma (bluealsa-aplay.service detenido)` y `Bluetooth disponible
   de nuevo (bluealsa-aplay.service arrancado)`.
 - Si Groove se reinicia **mientras suena** una alarma, no sabe que había parado Bluetooth: arráncalo a
   mano con `sudo systemctl start bluealsa-aplay` (o reinicia la Pi).
 - En Windows (desarrollo) y en los tests no se ejecuta `systemctl`.
+
+La restauración se confirma con el estado real del servicio. Si falla, la web conserva el aviso y ofrece **Reintentar Bluetooth** tras hasta tres reintentos adicionales cada 30 s. Los controles Transferir/Play/Pause de la página Spotify comparten la prioridad de alarmas y gestionan la cesión Bluetooth; la reproducción desde la app externa de Spotify sigue fuera de este arbitraje. Véanse [reglas y pruebas](docs/audio-transitions.md).
 
 Código: `bluetooth_audio.py` es el único módulo que para / arranca Bluetooth con `systemctl`
 (`pause()` / `resume()`); `AlarmPlaybackManager` lo llama al empezar a sonar y en STOP. (Aparte, el
@@ -1149,7 +1151,7 @@ alarmas antiguas), `volume_start`, `volume_end`, `fade_minutes` `max_duration_mi
   minutos y muestran su resultado en la web. Al agotar el margen, una alarma de una vez queda
   desactivada con el motivo visible; las recurrentes conservan su siguiente horario.
   Política y validación: [docs/alarm-recovery.md](docs/alarm-recovery.md).
-- Al **sustituir** una alarma que suena en local, `start()` no comprueba si se ha podido parar el
-  sonido anterior y arranca la nueva igualmente (no es tan estricto como STOP).
+- **Relevo con parada confirmada**: antes de sustituir una alarma se detiene su fuente. Si falla, se conserva el
+  control anterior y la siguiente queda pendiente. Bluetooth conserva una restauración fallida, con tres reintentos adicionales cada 30 s y botón manual. Procedimiento: [audio-transitions.md](docs/audio-transitions.md).
 - `FfmpegPlayer.stop()` espera a que ffmpeg termine con el lock tomado: si ffmpeg no responde, STOP
   puede tardar unos segundos.

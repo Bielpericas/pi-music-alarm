@@ -170,7 +170,7 @@ def transfer():
     device_id = _selected_device()
     if device_id:
         try:
-            client().transfer_playback(device_id, play=False)
+            current_app.extensions["playback"].control_spotify("transfer", device_id)
             flash("Reproducción transferida al dispositivo seleccionado.")
         except SpotifyError as exc:
             report(exc, "transfer")
@@ -182,7 +182,7 @@ def play():
     device_id = _selected_device()
     if device_id:
         try:
-            client().play(device_id)
+            current_app.extensions["playback"].control_spotify("play", device_id)
             flash("Play enviado.")
         except SpotifyError as exc:
             report(exc, "play")
@@ -194,7 +194,7 @@ def pause():
     device_id = _selected_device()
     if device_id:
         try:
-            client().pause(device_id)
+            current_app.extensions["playback"].control_spotify("pause", device_id)
             flash("Pausa enviada.")
         except SpotifyError as exc:
             report(exc, "pause")

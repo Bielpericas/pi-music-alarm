@@ -235,7 +235,8 @@ class PreflightScheduler:
     def _recover_raspotify(self, alarm_id, alarm, report):
         """Un único restart de Raspotify y nueva comprobación. Devuelve el informe
         final (el original si algo falla). Nunca lanza; sin bucles ni reintentos."""
-        if self.playback is not None and self.playback.active is not None:
+        if self.playback is not None and (self.playback.active is not None or
+                                         getattr(self.playback, "manual_spotify_device", None) is not None):
             logger.info("Pre-flight alarma %s: recuperación aplazada por alarma activa", alarm_id)
             return report
         if self.service_lock is not None and not self.service_lock.acquire(blocking=False):

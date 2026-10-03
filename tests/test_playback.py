@@ -241,10 +241,10 @@ class ManagerTest(unittest.TestCase):
         self.spotify.stop.assert_called_once_with()
         self.assertEqual(self.manager.active.via, "local")
 
-    def test_spotify_alarm_replaces_spotify_without_pausing(self):
+    def test_spotify_alarm_replaces_spotify_after_confirming_pause(self):
         self.manager.start(SPOTIFY)
         self.manager.start({**SPOTIFY, "id": 4})
-        self.spotify.stop.assert_not_called()  # la nueva reproducción ya sustituye
+        self.spotify.stop.assert_called_once_with()
         self.assertEqual(self.manager.active.id, 4)
 
     def test_spotify_alarm_replacing_local_stops_wav(self):

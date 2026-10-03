@@ -164,11 +164,13 @@ def describe_source(alarm):
     return "Local"
 
 
-def playback_key(active, snoozes, triggers=()):
+def playback_key(active, snoozes, triggers=(), bluetooth_restore_pending=False):
     """Huella del estado de reproducción: si cambia, la página se recarga."""
     parts = [f"{active.id}@{active.started_at.isoformat()}@{active.via}@{active.status}" if active else "-"]
     parts += [f"{p.alarm['id']}@{p.run_at.isoformat()}" for p in snoozes]
     parts += [f"trigger:{t['alarm_id']}@{t['minute_key']}@{t['status']}" for t in triggers]
+    if bluetooth_restore_pending:
+        parts.append("bluetooth-restore")
     return "|".join(parts)
 
 
@@ -305,6 +307,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
     playback = AlarmPlaybackManager(
         app.extensions["audio_player"], app.extensions["spotify_alarm"],
         bluetooth=app.extensions["bluetooth"], music=app.extensions["music"],
+        manual_client=app.extensions["spotify"],
     )
     app.extensions["playback"] = playback
 
@@ -362,7 +365,8 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         active, snoozes = playback.active, playback.pending_snoozes
         return {
             "playback_active": active,
-            "playback_key": playback_key(active, snoozes, db.trigger_states()),
+            "playback_key": playback_key(active, snoozes, db.trigger_states(), playback.bluetooth_restore_pending),
+            "bluetooth_restore_pending": playback.bluetooth_restore_pending,
             "sleep_timer_state": sleep_timer.status(),
             "day_letters": ui.DAY_LETTERS,
             "day_full": ui.DAY_FULL,
@@ -538,6 +542,14 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
                   f"{pending.run_at.strftime('%H:%M')}.")
         return redirect(url_for("index"))
 
+    @app.post("/playback/restore-bluetooth")
+    def restore_bluetooth():
+        if playback.restore_bluetooth():
+            flash("Receptor Bluetooth disponible.")
+        else:
+            flash("No se pudo devolver Bluetooth o la salida está ocupada. Revisa Diagnóstico.", "error")
+        return redirect(url_for("index"))
+
     @app.post("/playback/snooze/<int:alarm_id>/cancel")
     def cancel_snooze(alarm_id):
         if playback.cancel_snooze(alarm_id):
@@ -549,13 +561,15 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         """Estado para que la página se refresque sola cuando empieza a sonar."""
         active, snoozes = playback.active, playback.pending_snoozes
         return jsonify(
-            key=playback_key(active, snoozes, db.trigger_states()),
+            key=playback_key(active, snoozes, db.trigger_states(), playback.bluetooth_restore_pending),
+            bluetooth_restore_pending=playback.bluetooth_restore_pending,
             active=None if active is None else {
                 "id": active.id,
                 "name": active.alarm["name"],
                 "started_at": active.started_at.isoformat(timespec="seconds"),
                 "via": active.via,
                 "status": active.status,
+                "reason": active.reason,
             },
             snoozes=[{"id": p.alarm["id"], "name": p.alarm["name"],
                       "run_at": p.run_at.isoformat(timespec="seconds")}

@@ -84,7 +84,9 @@ class BluetoothAudioTest(unittest.TestCase):
         self.assertEqual(self.systemctl.calls, [
             ["systemctl", "--no-ask-password", "is-active", "bluealsa-aplay.service"],
             ["systemctl", "--no-ask-password", "stop", "bluealsa-aplay.service"],
+            ["systemctl", "--no-ask-password", "is-active", "bluealsa-aplay.service"],
             ["systemctl", "--no-ask-password", "start", "bluealsa-aplay.service"],
+            ["systemctl", "--no-ask-password", "is-active", "bluealsa-aplay.service"],
         ])
         text = "\n".join(logs.output)
         self.assertIn("Bluetooth pausado por alarma", text)
@@ -102,8 +104,8 @@ class BluetoothAudioTest(unittest.TestCase):
 
     def test_player_already_stopped_is_left_alone(self):
         bt = self.make(state="inactive")
-        self.assertFalse(bt.pause())
-        self.assertFalse(bt.resume())  # no lo paró Groove: no se arranca
+        self.assertTrue(bt.pause())  # salida ya libre
+        self.assertTrue(bt.resume())  # no lo paró Groove: no se arranca
         self.assertEqual(self.systemctl.verbs, [])
 
     def test_pause_is_idempotent(self):
@@ -121,8 +123,8 @@ class BluetoothAudioTest(unittest.TestCase):
             with self.subTest(raises=type(raises).__name__):
                 bt = self.make(raises=raises)
                 with self.assertLogs("alarms", "WARNING"):
-                    self.assertTrue(bt.pause())  # estado desconocido: se intenta parar
-                    self.assertFalse(bt.resume())
+                    self.assertFalse(bt.pause())  # no inventar una parada confirmada
+                    self.assertTrue(bt.resume())  # no hay arranque original acreditado
                 self.assertFalse(bt.paused)
 
     def test_permission_denied_is_logged(self):
@@ -133,7 +135,8 @@ class BluetoothAudioTest(unittest.TestCase):
         text = "\n".join(logs.output)
         self.assertIn("Access denied", text)
         self.assertIn("No se pudo detener bluealsa-aplay.service", text)
-        self.assertIn("sudo systemctl start bluealsa-aplay.service", text)
+        self.assertFalse(bt.paused)
+        self.assertFalse(bt.restore_pending)  # is-active confirma que nunca se detuvo
 
     def test_create_bluetooth(self):
         self.assertIsInstance(create_bluetooth({}, platform="win32"), NoBluetooth)
@@ -221,25 +224,25 @@ class ManagerBluetoothTest(unittest.TestCase):
         self.manager.forget(LOCAL["id"])
         self.assertEqual(self.systemctl.state, "active")
 
-    def test_systemctl_failure_never_blocks_the_alarm(self):
+    def test_unconfirmed_bluetooth_stop_defers_the_alarm(self):
         self.systemctl.raises = FileNotFoundError("systemctl")
         with self.assertLogs("alarms", "WARNING"):
-            self.assertEqual(self.manager.start(LOCAL), "local")
-            self.local.play.assert_called_once_with()
+            self.assertEqual(self.manager.start(LOCAL), "stop_pending")
+            self.local.play.assert_not_called()
             self.assertIsNotNone(self.manager.stop())
 
-    def test_bluetooth_exceptions_never_block_the_alarm(self):
+    def test_bluetooth_exception_preserves_pending_release(self):
         broken = mock.Mock(spec=BluetoothAudio)
         broken.pause.side_effect = RuntimeError("boom")
         broken.resume.side_effect = RuntimeError("boom")
         manager = AlarmPlaybackManager(self.local, self.spotify, clock=lambda: NOW,
-                                       bluetooth=broken)
+                                       bluetooth=broken, schedule_once=mock.Mock())
         with self.assertLogs("alarms", "ERROR"):
-            self.assertEqual(manager.start(LOCAL), "local")
+            self.assertEqual(manager.start(LOCAL), "stop_pending")
             result = manager.stop()
-        self.local.play.assert_called_once_with()
-        self.assertTrue(result.silenced)
-        self.assertIsNone(manager.active)
+        self.local.play.assert_not_called()
+        self.assertFalse(result.silenced)
+        self.assertEqual(manager.active.status, "stop_pending")
 
 
 class AppBluetoothTest(unittest.TestCase):

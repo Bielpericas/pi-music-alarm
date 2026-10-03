@@ -96,7 +96,7 @@ class SpotifyNetworkRecovery:
         if self._offline:
             logger.info("Raspotify: conexión con Spotify restablecida; comprobando Groove")
             self._offline = False
-        if self.playback.active is not None:
+        if self.playback.active is not None or getattr(self.playback, "manual_spotify_device", None) is not None:
             self.last_status = "Recuperación aplazada: alarma activa"
             return
         saved_id = db.read_setting(self.database, DEVICE_ID_KEY)
@@ -144,7 +144,9 @@ class SpotifyNetworkRecovery:
             self.last_status = "Recuperación aplazada: reproducción ocupada"
             return
         try:
-            if self.playback.active is not None or not self.alarm_player.service_lock.acquire(blocking=False):
+            if (self.playback.active is not None or
+                    getattr(self.playback, "manual_spotify_device", None) is not None or
+                    not self.alarm_player.service_lock.acquire(blocking=False)):
                 self.last_status = "Recuperación aplazada: alarma o mantenimiento Spotify"
                 return
             try:

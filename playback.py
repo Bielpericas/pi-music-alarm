@@ -12,7 +12,7 @@ Concurrencia (hilos de APScheduler + hilos de waitress):
 
 Reglas:
 - Si se dispara una alarma mientras suena otra, la anterior se para y suena
-  la nueva ("la última gana").
+  la nueva solo tras confirmar la parada ("la última aceptada gana").
 - STOP es idempotente: sin alarma sonando no hace nada.
 - Los snoozes viven solo en memoria: si la app se reinicia, se pierden (mejor
   eso que sonar a una hora incorrecta). Las alarmas normales no se tocan.
@@ -24,7 +24,7 @@ Reglas:
   sonar se para el reproductor Bluetooth (libera la tarjeta USB) y sigue
   parado mientras suene la alarma, también con el WAV de respaldo o si otra
   alarma la sustituye. STOP y +10 MIN lo devuelven; al volver a sonar un
-  snooze se para otra vez. Un fallo aquí nunca impide que suene la alarma.
+  snooze se para otra vez. Si la salida no se confirma libre, la alarma queda pendiente.
 - Sonido local (alarmas locales y respaldo de Spotify): la pista de la
   biblioteca (music_library.py) elegida o una al azar, elegida de nuevo cada
   vez que la alarma empieza a sonar (también tras un snooze). Si no puede
@@ -51,6 +51,8 @@ from datetime import datetime, timedelta
 from typing import NamedTuple, Optional
 
 from fade import fade_plan, start_fade
+from spotify_client import SpotifyError
+from startup_budget import StartupBudget, StartupCancelled, StartupExpired, budget_lock, current_budget
 
 logger = logging.getLogger("alarms")
 
@@ -58,6 +60,7 @@ SNOOZE_MINUTES = 10
 STOP_RETRY_SECONDS = 30
 STOP_RETRY_LIMIT = 5
 START_RETRY_MINUTES = 2
+RESTORE_RETRY_LIMIT = 3
 ALARM_FIELDS = ("id", "name", "time", "source", "spotify_uri")
 VOLUME_FIELDS = ("volume_start", "volume_end", "fade_minutes")  # opcionales
 DURATION_FIELD = "max_duration_minutes"  # opcional; 0 o ausente = sin límite
@@ -102,6 +105,8 @@ def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=
     Nunca lanza excepciones: los fallos se registran.
     """
     name = alarm["name"]
+    if interrupted is not None and interrupted.is_set():
+        return "cancelled"
     if alarm["source"] == "spotify":
         if spotify is not None and alarm["spotify_uri"]:
             try:
@@ -131,7 +136,16 @@ def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=
                 return outcome
         except Exception:
             logger.exception("La música local falló al disparar «%s»", name)
+        try:
+            if music.stop() is False:
+                logger.warning("La música local no arrancó, pero su proceso no se pudo detener")
+                return "local_stop_pending"
+        except Exception:
+            logger.exception("No se confirmó la parada de la música local antes del WAV")
+            return "local_stop_pending"
         logger.warning("Sin música local para «%s»: suena el WAV de emergencia", name)
+    if interrupted is not None and interrupted.is_set():
+        return "cancelled"
     if player is not None:
         try:
             callback = (lambda ok: on_finished("emergency", ok)) if on_finished else None
@@ -139,6 +153,12 @@ def play_alarm_sound(alarm, player=None, spotify=None, volume=None, interrupted=
                 return outcome
         except Exception:
             logger.exception("El reproductor falló al disparar «%s»", name)
+        try:
+            if player.stop() is False:
+                return "local_stop_pending"
+        except Exception:
+            logger.exception("No se confirmó la parada del WAV que no pudo arrancar")
+            return "local_stop_pending"
     logger.error("No se pudo iniciar ningún sonido para «%s»", name)
     return "failed"
 
@@ -164,6 +184,7 @@ class ActiveAlarm:
     manual: bool = False  # disparada con Probar
     snoozes: int = 0      # cuántas veces se ha pospuesto ya
     status: str = "playing"  # connecting, playing, failed, stop_pending, finished, cancelled
+    reason: str = ""
 
     @property
     def id(self):
@@ -186,7 +207,7 @@ class StopResult(NamedTuple):
 class AlarmPlaybackManager:
     def __init__(self, player, spotify=None, schedule_once=None,
                  clock=datetime.now, snooze_minutes=SNOOZE_MINUTES, fader=None,
-                 bluetooth=None, music=None, on_alarm_start=None):
+                 bluetooth=None, music=None, on_alarm_start=None, manual_client=None):
         self.player = player                  # AudioPlayer local (WAV de emergencia)
         self.music = music                    # LocalMusic (biblioteca + ffmpeg) o None
         self.spotify = spotify                # SpotifyAlarmPlayer o None
@@ -210,6 +231,13 @@ class AlarmPlaybackManager:
         # on_alarm_start(nombre): se llama en cada start() antes de sonar nada
         # (el temporizador de sueño se anula ahí; ver sleep_timer.py).
         self.on_alarm_start = on_alarm_start
+        self.manual_client = manual_client
+        self._service_lock = getattr(spotify, "service_lock", None) or threading.RLock()
+        self._manual_device = None
+        self._restore_retry = None
+        self._restore_ticket = 0
+        self._restore_attempts = 0
+        self._restore_pending = False
 
     # --- Estado (lectura sin lock: son referencias a objetos inmutables) ---
 
@@ -240,6 +268,8 @@ class AlarmPlaybackManager:
             # La generación sube antes de avisar: un temporizador de sueño que se
             # esté creando a la vez ve el cambio y no se programa.
             self._token += 1
+            self._cancel_restore_retry()
+            self._restore_attempts = 0
             self._cancel_stop_retry()
             self._stop_retry_attempts = 0
             self._stop_retry_auto = False
@@ -252,19 +282,35 @@ class AlarmPlaybackManager:
 
             # Si esta misma alarma tenía un snooze pendiente, queda obsoleto.
             self._cancel_pending(alarm["id"])
+            starting = threading.Event()
+            self._starting = starting
             previous = self._active
             if previous is not None:
                 logger.info("«%s» sustituye a «%s», que estaba sonando",
                             alarm["name"], previous.alarm["name"])
-                if previous.via != "spotify":
-                    self._stop_local()
+                if not self._silence_active(previous):
+                    self._starting = None
+                    self._active = replace(previous, status="stop_pending")
+                    self._schedule_stop_retry()
+                    logger.warning("No se inicia «%s»: la reproducción anterior no se ha detenido",
+                                   alarm["name"])
+                    return "stop_pending"
             started_at = self._clock()
-            starting = threading.Event()
-            self._starting = starting
             self._active = ActiveAlarm(alarm, started_at, "connecting", manual, snoozes,
                                        status="connecting")
             # Con la tarjeta libre antes de reproducir (Spotify, WAV o respaldo).
-            self._pause_bluetooth()
+            if not self._pause_bluetooth():
+                self._starting = None
+                self._active = replace(self._active, via="bluetooth", status="stop_pending",
+                                       reason="No se pudo liberar la salida Bluetooth; la alarma no ha arrancado.")
+                self._schedule_stop_retry()
+                return "stop_pending"
+            if not self._stop_manual_spotify():
+                self._starting = None
+                self._active = replace(self._active, via="manual_spotify", status="stop_pending",
+                                       reason="No se pudo pausar Spotify manual; la alarma no ha arrancado.")
+                self._schedule_stop_retry()
+                return "stop_pending"
             initial_volume, plan = volume_settings(alarm)
             try:
                 via = play_alarm_sound(alarm, self.player, self.spotify,
@@ -273,13 +319,10 @@ class AlarmPlaybackManager:
                                        on_finished=lambda kind, ok: self._local_ended(token, kind, ok))
             finally:
                 self._starting = None
-            # Si la anterior sonaba en Spotify y la nueva no la ha reemplazado
-            # allí, se pausa. (Pausar y luego reproducir en Spotify podría
-            # llegar desordenado, por eso no se pausa si la nueva es Spotify.)
-            if previous is not None and previous.via == "spotify" and via not in ("spotify", "stop_pending"):
-                self._stop_spotify()
-
-            status = via if via in ("failed", "cancelled", "stop_pending") else "playing"
+            if via == "local_stop_pending":
+                via, status = "local", "stop_pending"
+            else:
+                status = via if via in ("failed", "cancelled", "stop_pending") else "playing"
             if via == "stop_pending":
                 via = "spotify"  # conservar el dispositivo incierto para reintentar pausa
             self._active = ActiveAlarm(alarm, started_at, via, manual, snoozes, status)
@@ -287,7 +330,7 @@ class AlarmPlaybackManager:
                 self._start_fade(plan)
             if status == "playing":
                 self._schedule_auto_stop(alarm, started_at, token)
-            elif status == "failed":
+            elif status in ("failed", "cancelled"):
                 self._resume_bluetooth()
             elif status == "stop_pending":
                 self._schedule_stop_retry()
@@ -328,14 +371,7 @@ class AlarmPlaybackManager:
         if active is None:
             return None
         self._cancel_fade()  # antes de pausar: que no suba el volumen tras STOP
-        if active.status in ("failed", "finished", "cancelled"):
-            silenced = True
-        elif active.via == "spotify":
-            silenced = self._stop_spotify()
-        elif active.via in ("local", "fallback"):
-            silenced = self._stop_local()
-        else:
-            silenced = True  # "cancelled": no llegó a sonar nada
+        silenced = self._silence_active(active)
         if not silenced:
             self._active = replace(active, status="stop_pending")
             self._stop_retry_auto = self._stop_retry_auto or auto
@@ -552,19 +588,143 @@ class AlarmPlaybackManager:
 
     def _pause_bluetooth(self):
         if self.bluetooth is None:
-            return
+            return True
         try:
-            self.bluetooth.pause()
+            return self.bluetooth.pause() is not False
         except Exception:
-            logger.exception("No se pudo pausar Bluetooth; la alarma suena igualmente")
+            logger.exception("No se pudo confirmar la pausa de Bluetooth")
+            return False
 
     def _resume_bluetooth(self):
         if self.bluetooth is None:
-            return
+            return True
+        if self._manual_device is not None:
+            return False
         try:
-            self.bluetooth.resume()
+            restored = self.bluetooth.resume() is not False
         except Exception:
             logger.exception("No se pudo devolver Bluetooth tras la alarma")
+            restored = False
+        self._restore_pending = not restored
+        if restored:
+            self._cancel_restore_retry()
+        elif self._restore_retry is None and self._restore_attempts < RESTORE_RETRY_LIMIT:
+            self._restore_ticket += 1
+            ticket = self._restore_ticket
+            token = self._token
+            try:
+                self._restore_retry = self.schedule_once(
+                    self._clock() + timedelta(seconds=STOP_RETRY_SECONDS),
+                    lambda: self._fire_restore_retry(token, ticket))
+            except Exception:
+                logger.exception("No se pudo programar la restauración de Bluetooth")
+        return restored
+
+    def _cancel_restore_retry(self):
+        cancel, self._restore_retry = self._restore_retry, None
+        self._restore_ticket += 1
+        if cancel is not None:
+            try:
+                cancel()
+            except Exception:
+                pass
+
+    def _audio_busy(self):
+        return self._active is not None and self._active.status not in ("failed", "finished", "cancelled")
+
+    @property
+    def bluetooth_restore_pending(self):
+        return self._restore_pending
+
+    @property
+    def manual_spotify_device(self):
+        return self._manual_device
+
+    def restore_bluetooth(self):
+        with self._lock:
+            if self._audio_busy() or self._manual_device is not None:
+                return False
+            self._cancel_restore_retry()
+            return self._resume_bluetooth()
+
+    def _fire_restore_retry(self, token, ticket):
+        with self._lock:
+            if (token != self._token or ticket != self._restore_ticket or
+                    self._restore_retry is None or self._audio_busy() or self._manual_device is not None):
+                return
+            self._restore_retry = None
+            self._restore_ticket += 1
+            self._restore_attempts += 1
+            if not self._resume_bluetooth() and self._restore_attempts >= RESTORE_RETRY_LIMIT:
+                logger.error("Bluetooth sigue pendiente tras tres reintentos; usa Reintentar Bluetooth")
+
+    def _silence_active(self, active):
+        if active.status in ("failed", "finished", "cancelled"):
+            return True
+        if active.via == "spotify":
+            return self._stop_spotify()
+        if active.via == "manual_spotify":
+            return self._stop_manual_spotify()
+        if active.via == "bluetooth":
+            return self._pause_bluetooth()
+        if active.via in ("local", "fallback"):
+            return self._stop_local()
+        return True
+
+    def _stop_manual_spotify(self):
+        if self._manual_device is None:
+            return True
+        try:
+            with (current_budget() or StartupBudget(10)).activate(), budget_lock(self._service_lock):
+                self.manual_client.pause(self._manual_device)
+        except Exception:
+            logger.warning("No se pudo confirmar la pausa de Spotify manual")
+            return False
+        self._manual_device = None
+        return True
+
+    def manual_spotify_paused(self, device_id):
+        """El sleep timer llama con el lock de reproducción tomado."""
+        if self._manual_device == device_id:
+            self._manual_device = None
+            self._resume_bluetooth()
+
+    def control_spotify(self, action, device_id):
+        """Los controles manuales comparten exclusión y prioridad con las alarmas."""
+        if action not in {"play", "transfer", "pause"}:
+            raise ValueError("Control Spotify no válido")
+        try:
+            with StartupBudget(10).activate(), budget_lock(self._lock), budget_lock(self._service_lock):
+                if self._audio_busy():
+                    raise SpotifyError("Hay una alarma activa o una parada pendiente. Usa STOP antes de controlar Spotify.")
+                if action == "pause":
+                    self.manual_client.pause(device_id)
+                    if self._manual_device is None or self._manual_device == device_id:
+                        self._manual_device = None
+                        self._resume_bluetooth()
+                    return
+                if self._manual_device is not None and self._manual_device != device_id:
+                    if not self._stop_manual_spotify():
+                        raise SpotifyError("No se pudo pausar el dispositivo anterior de Spotify.")
+                if not self._pause_bluetooth():
+                    self._resume_bluetooth()
+                    raise SpotifyError("No se pudo liberar la salida Bluetooth. Revisa Diagnóstico.")
+                self._cancel_restore_retry()
+                self._restore_attempts = 0
+                previous_device = self._manual_device
+                self._manual_device = device_id
+                try:
+                    if action == "transfer":
+                        self.manual_client.transfer_playback(device_id, play=False)
+                    else:
+                        self.manual_client.play(device_id)
+                except SpotifyError as exc:
+                    if exc.status in (400, 401, 403, 404, 429):
+                        self._manual_device = previous_device
+                        self._resume_bluetooth()
+                    raise
+        except (StartupExpired, StartupCancelled):
+            raise SpotifyError("Se agotó el plazo del control Spotify. Revisa el estado antes de reintentarlo.") from None
 
     def _stop_local(self):
         """Para la música local (ffmpeg) y el WAV de emergencia: pudo sonar cualquiera."""
