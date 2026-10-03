@@ -11,3 +11,6 @@ sounds/*
 
 instance/music/*
 !instance/music/.gitkeep
+
+# Historial local de Groove
+historial/

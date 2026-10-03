@@ -106,16 +106,17 @@ class PlaybackFailuresTest(unittest.TestCase):
         self.assertEqual(self.manager.active.id, 2)
         self.assertEqual(self.manager.active.status, "playing")
 
-    def test_spotify_stop_failure_preserves_auto_stop_and_bluetooth(self):
+    def test_spotify_stop_failure_replaces_auto_stop_with_retry_and_keeps_bluetooth(self):
         self.manager.start(dict(ALARM, source="spotify", spotify_uri="spotify:track:x"))
         self.spotify.stop.return_value = False
         self.assertFalse(self.manager.stop().silenced)
         self.assertEqual(self.manager.active.status, "stop_pending")
-        self.cancel.assert_not_called()
+        self.cancel.assert_called_once()  # se sustituye el auto-stop por un reintento
+        self.assertEqual(self.schedule.call_count, 2)
         self.bluetooth.resume.assert_not_called()
         self.spotify.stop.return_value = True
         self.assertTrue(self.manager.stop().silenced)
-        self.cancel.assert_called_once()
+        self.assertEqual(self.cancel.call_count, 2)  # se cancela también el reintento
         self.bluetooth.resume.assert_called_once()
 
     def test_failed_snooze_does_not_create_pending_alarm(self):
@@ -124,7 +125,7 @@ class PlaybackFailuresTest(unittest.TestCase):
         self.assertIsNone(self.manager.snooze())
         self.assertEqual(self.manager.pending_snoozes, ())
         self.assertEqual(self.manager.active.status, "stop_pending")
-        self.schedule.assert_called_once()  # solamente el auto-stop original
+        self.assertEqual(self.schedule.call_count, 2)  # auto-stop y reintento; ningún snooze
 
     def test_failed_wav_stop_can_be_retried(self):
         self.music.starts = False

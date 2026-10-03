@@ -195,6 +195,7 @@ class PreflightSchedulingTest(unittest.TestCase):
         self.now = datetime(2026, 9, 28, 7, 27)
         self.create()
         manager = mock.Mock()
+        manager.start.return_value = "local"
         fired = scheduler.check_alarms(self.db_path, datetime(2026, 9, 28, 7, 30), manager=manager)
         self.assertEqual(fired, ["Trabajo"])
         manager.start.assert_called_once()
@@ -207,7 +208,9 @@ class PreflightSchedulingTest(unittest.TestCase):
 
     def test_one_time_alarm_loses_its_preflight_after_ringing(self):
         self.create(days=[])
-        scheduler.check_alarms(self.db_path, datetime(2026, 9, 28, 7, 30), manager=mock.Mock())
+        manager = mock.Mock()
+        manager.start.return_value = "local"
+        scheduler.check_alarms(self.db_path, datetime(2026, 9, 28, 7, 30), manager=manager)
         self.now = datetime(2026, 9, 28, 7, 30, 30)
         self.preflight.sync()
         self.assertEqual(preflight_jobs(self.sched), {})
@@ -372,6 +375,7 @@ class PreflightRunTest(unittest.TestCase):
         with self.assertLogs("alarms", "ERROR"):
             job.func(*job.args, **job.kwargs)  # lo que ejecutaría APScheduler a las 07:25
         manager = mock.Mock()
+        manager.start.return_value = "local"
         fired = scheduler.check_alarms(self.db_path, datetime(2026, 9, 28, 7, 30), manager=manager)
         self.assertEqual(fired, ["Trabajo"])
         self.assertEqual(manager.start.call_args.args[0]["id"], alarm_id)
@@ -488,6 +492,7 @@ class RaspotifyRecoveryTest(HealthTestCase):
         run_kwargs = next(kw for cmd, kw in self.run.calls if cmd == RESTART)
         self.assertEqual(run_kwargs["timeout"], 15)
         manager = mock.Mock()
+        manager.start.return_value = "local"
         fired = scheduler.check_alarms(self.db_path, datetime(2026, 9, 28, 7, 30), manager=manager)
         self.assertEqual(fired, ["Trabajo"])
         manager.start.assert_called_once()

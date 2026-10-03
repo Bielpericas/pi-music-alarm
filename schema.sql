@@ -33,3 +33,12 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Último intento programado por alarma; reserva y resultado, sin historial ilimitado.
+CREATE TABLE IF NOT EXISTS alarm_triggers (
+    alarm_id INTEGER PRIMARY KEY,
+    minute_key TEXT NOT NULL,
+    deadline TEXT NOT NULL,
+    next_attempt TEXT NOT NULL,
+    status TEXT NOT NULL
+);

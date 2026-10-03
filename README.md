@@ -8,6 +8,9 @@ scheduler que las dispara a su hora. Al dispararse, la alarma reproduce un WAV l
 Cada alarma puede sonar con el WAV local o con Spotify (canción, álbum o playlist); si Spotify falla,
 suena el respaldo (música local y, en último caso, el WAV de emergencia).
 
+Para entender cómo está construido por dentro (hardware, software instalado, módulos y decisiones
+de diseño), ver [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md).
+
 ## Estado actual del acceso (Groove en la Raspberry)
 
 - **Groove normal**: `http://192.168.0.21:5000` (IP fija por reserva DHCP).
@@ -1125,10 +1128,11 @@ alarmas antiguas), `volume_start`, `volume_end`, `fade_minutes` `max_duration_mi
   worker*: iniciado pero **pendiente** (ver [docs/https-spotify-oauth.md](docs/https-spotify-oauth.md)).
 - Protección CSRF si la app se expone fuera de la red local (y asegurarse de que `SECRET_KEY` está
   definida en `.env`: sin ella se usa `dev`).
-- Alarmas durante una **parada pendiente**: la alarma que se dispara mientras hay un STOP fallido se
-  pierde (solo queda un aviso en el log; el scheduler ignora el `"stop_pending"` que devuelve
-  `start()`). Además, si falla el auto-stop no se reintenta solo: hasta que alguien pulse STOP no
-  suena ninguna alarma más. Decidir si reintentar la parada automáticamente o encolar la alarma.
+- **Recuperación tras una parada pendiente**, implementada localmente y pendiente de prueba en la Pi:
+  hasta cinco reintentos de STOP cada 30 s; las alarmas rechazadas quedan reservadas durante dos
+  minutos y muestran su resultado en la web. Al agotar el margen, una alarma de una vez queda
+  desactivada con el motivo visible; las recurrentes conservan su siguiente horario.
+  Política y validación: [docs/alarm-recovery.md](docs/alarm-recovery.md).
 - Al **sustituir** una alarma que suena en local, `start()` no comprueba si se ha podido parar el
   sonido anterior y arranca la nueva igualmente (no es tan estricto como STOP).
 - `FfmpegPlayer.stop()` espera a que ffmpeg termine con el lock tomado: si ffmpeg no responde, STOP

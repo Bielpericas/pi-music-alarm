@@ -78,7 +78,22 @@ def init_app(app):
 
 
 def list_alarms():
-    return get_db().execute("SELECT * FROM alarms ORDER BY time, name").fetchall()
+    return get_db().execute(
+        "SELECT a.*, t.status AS trigger_status, t.minute_key AS trigger_minute "
+        "FROM alarms a LEFT JOIN alarm_triggers t ON t.alarm_id = a.id "
+        "ORDER BY a.time, a.name, a.id"
+    ).fetchall()
+
+
+def trigger_states():
+    return get_db().execute(
+        "SELECT alarm_id, minute_key, status FROM alarm_triggers ORDER BY alarm_id"
+    ).fetchall()
+
+
+def cancel_trigger(conn, alarm_id):
+    conn.execute("UPDATE alarm_triggers SET status = 'cancelled' "
+                 "WHERE alarm_id = ? AND status IN ('starting', 'stop_pending')", (alarm_id,))
 
 
 def get_alarm(alarm_id):
@@ -115,6 +130,7 @@ def update_alarm(alarm_id, name, time, days, source="local", spotify_uri=None,
          volume_start, volume_end, fade_minutes, max_duration_minutes, local_track,
          spotify_name, spotify_subtitle, alarm_id),
     )
+    cancel_trigger(db, alarm_id)
     db.commit()
     return cur.rowcount > 0
 
@@ -129,6 +145,7 @@ def alarms_using_track(name):
 def toggle_alarm(alarm_id):
     db = get_db()
     cur = db.execute("UPDATE alarms SET enabled = 1 - enabled WHERE id = ?", (alarm_id,))
+    cancel_trigger(db, alarm_id)
     db.commit()
     return cur.rowcount > 0
 
@@ -136,6 +153,7 @@ def toggle_alarm(alarm_id):
 def delete_alarm(alarm_id):
     db = get_db()
     cur = db.execute("DELETE FROM alarms WHERE id = ?", (alarm_id,))
+    db.execute("DELETE FROM alarm_triggers WHERE alarm_id = ?", (alarm_id,))
     db.commit()
     return cur.rowcount > 0
 
@@ -181,8 +199,79 @@ def read_setting(database, key, default=None):
 
 def enabled_alarms_at(conn, hhmm):
     return conn.execute(
-        "SELECT * FROM alarms WHERE enabled = 1 AND time = ?", (hhmm,)
+        "SELECT * FROM alarms WHERE enabled = 1 AND time = ? ORDER BY id", (hhmm,)
     ).fetchall()
+
+
+def reserve_trigger(conn, alarm_id, minute_key, deadline):
+    """Reserva atómica sin desactivar una alarma única antes de aceptarla."""
+    with conn:
+        cur = conn.execute(
+            "UPDATE alarms SET last_triggered = ? WHERE id = ? AND enabled = 1 "
+            "AND (last_triggered IS NULL OR last_triggered <> ?) "
+            "AND NOT EXISTS (SELECT 1 FROM alarm_triggers "
+            "WHERE alarm_id = ? AND status = 'starting')",
+            (minute_key, alarm_id, minute_key, alarm_id),
+        )
+        if not cur.rowcount:
+            return False
+        conn.execute(
+            "INSERT INTO alarm_triggers (alarm_id, minute_key, deadline, next_attempt, status) "
+            "VALUES (?, ?, ?, ?, 'starting') "
+            "ON CONFLICT(alarm_id) DO UPDATE SET minute_key = excluded.minute_key, "
+            "deadline = excluded.deadline, next_attempt = excluded.next_attempt, "
+            "status = 'starting'",
+            (alarm_id, minute_key, deadline, minute_key),
+        )
+    return True
+
+
+def interrupt_unfinished_triggers(conn):
+    """Al arrancar el único scheduler: un intento en vuelo tiene resultado incierto.
+
+    No se repite: el sonido pudo arrancar antes del corte. Los rechazos conocidos
+    (stop_pending) conservan su ventana de recuperación.
+    """
+    rows = conn.execute("SELECT alarm_id, minute_key FROM alarm_triggers "
+                        "WHERE status = 'starting'").fetchall()
+    for row in rows:
+        finish_trigger(conn, row["alarm_id"], row["minute_key"], "interrupted")
+    return rows
+
+
+def pending_triggers(conn):
+    return conn.execute(
+        "SELECT a.*, t.minute_key AS trigger_minute, t.deadline, t.next_attempt "
+        "FROM alarm_triggers t JOIN alarms a ON a.id = t.alarm_id "
+        "WHERE t.status = 'stop_pending' AND a.enabled = 1 "
+        "ORDER BY t.minute_key, a.id"
+    ).fetchall()
+
+
+def reserve_retry(conn, alarm_id, minute_key, now):
+    with conn:
+        cur = conn.execute(
+            "UPDATE alarm_triggers SET status = 'starting' "
+            "WHERE alarm_id = ? AND minute_key = ? AND status = 'stop_pending' "
+            "AND next_attempt <= ? AND deadline >= ? "
+            "AND EXISTS (SELECT 1 FROM alarms WHERE id = ? AND enabled = 1)",
+            (alarm_id, minute_key, now, now, alarm_id),
+        )
+    return cur.rowcount > 0
+
+
+def finish_trigger(conn, alarm_id, minute_key, status, next_attempt=None, expected='starting'):
+    """Un rechazo conserva la reserva; cualquier resultado final cierra el intento."""
+    with conn:
+        cur = conn.execute(
+            "UPDATE alarm_triggers SET status = ?, next_attempt = COALESCE(?, next_attempt) "
+            "WHERE alarm_id = ? AND minute_key = ? AND status = ?",
+            (status, next_attempt, alarm_id, minute_key, expected),
+        )
+        if cur.rowcount and status != 'stop_pending':
+            conn.execute("UPDATE alarms SET enabled = 0 WHERE id = ? AND days = '' "
+                         "AND last_triggered = ?", (alarm_id, minute_key))
+    return cur.rowcount > 0
 
 
 def claim_trigger(conn, alarm_id, minute_key):

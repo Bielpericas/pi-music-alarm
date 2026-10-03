@@ -7,7 +7,7 @@ editar o borrar alarmas, y tras un reinicio todo sigue funcionando.
 """
 import atexit
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -16,9 +16,30 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
 import db
-from playback import play_alarm_sound
+from playback import play_alarm_sound, START_RETRY_MINUTES
 
 logger = logging.getLogger("alarms")
+TRIGGER_RETRY_MINUTES = START_RETRY_MINUTES
+
+
+def _start_reserved(conn, alarm, minute_key, now, manager):
+    try:
+        result = manager.start(alarm)
+    except Exception:
+        logger.exception("Falló el arranque de «%s»", alarm["name"])
+        result = "failed"
+    if result not in ("local", "spotify", "fallback", "stop_pending", "failed", "cancelled"):
+        logger.error("Resultado de arranque no reconocido para «%s»", alarm["name"])
+        result = "failed"
+    db.finish_trigger(conn, alarm["id"], minute_key, result,
+                      (now + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"))
+    if result == "stop_pending":
+        logger.warning("Alarma «%s» pendiente: parada anterior sin confirmar; "
+                       "se reintentará durante un máximo de %s minutos",
+                       alarm["name"], TRIGGER_RETRY_MINUTES)
+    elif result in ("failed", "cancelled"):
+        logger.warning("Alarma «%s» no iniciada: %s", alarm["name"], result)
+    return result in ("local", "spotify", "fallback")
 
 
 def close_logging():
@@ -64,27 +85,44 @@ def alarm_matches_day(alarm, now):
 
 
 def check_alarms(database, now=None, player=None, spotify=None, manager=None):
-    """Dispara las alarmas que tocan en el minuto `now`. Devuelve sus nombres.
+    """Dispara el minuto actual y reintenta rechazos recientes por stop_pending.
 
     Con `manager` (AlarmPlaybackManager) la alarma queda como "activa" para
-    STOP / +10 MIN; sin él, solo suena (así la usan algunos tests).
+    STOP / +10 MIN y devuelve solo nombres cuyo arranque fue confirmado. La
+    reserva atómica se mantiene incluso durante un rechazo, hasta dos minutos.
+    Sin manager conserva la compatibilidad con los tests originales.
 
     APScheduler ejecuta este job en su pool de hilos: si Spotify tarda (las
     peticiones tienen timeout), no se bloquea el bucle del scheduler.
     """
-    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    now = now or datetime.now()
     minute_key = now.strftime("%Y-%m-%d %H:%M")
     fired = []
     conn = db.connect(database)
     try:
+        if manager is not None:
+            stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+            for alarm in db.pending_triggers(conn):
+                original = alarm["trigger_minute"]
+                if stamp > alarm["deadline"]:
+                    if db.finish_trigger(conn, alarm["id"], original, "expired", expected="stop_pending"):
+                        logger.error("Alarma «%s» no iniciada: agotado el margen "
+                                     "de recuperación tras una parada fallida", alarm["name"])
+                elif db.reserve_retry(conn, alarm["id"], original, stamp):
+                    if _start_reserved(conn, alarm, original, now, manager):
+                        fired.append(alarm["name"])
         for alarm in db.enabled_alarms_at(conn, now.strftime("%H:%M")):
-            if alarm_matches_day(alarm, now) and db.claim_trigger(
-                conn, alarm["id"], minute_key
-            ):
-                if manager is not None:
-                    manager.start(alarm)
-                else:
-                    fire_alarm(alarm, player=player, spotify=spotify)
+            if not alarm_matches_day(alarm, now):
+                continue
+            if manager is not None:
+                deadline = (now.replace(second=0, microsecond=0) +
+                            timedelta(minutes=TRIGGER_RETRY_MINUTES))
+                if db.reserve_trigger(conn, alarm["id"], minute_key,
+                                      deadline.strftime("%Y-%m-%d %H:%M:%S")):
+                    if _start_reserved(conn, alarm, minute_key, now, manager):
+                        fired.append(alarm["name"])
+            elif db.claim_trigger(conn, alarm["id"], minute_key):
+                fire_alarm(alarm, player=player, spotify=spotify)
                 fired.append(alarm["name"])
     finally:
         conn.close()
@@ -92,6 +130,13 @@ def check_alarms(database, now=None, player=None, spotify=None, manager=None):
 
 
 def start_scheduler(app, manager):
+    conn = db.connect(app.config["DATABASE"])
+    try:
+        for trigger in db.interrupt_unfinished_triggers(conn):
+            logger.warning("Intento de alarma %s (%s) interrumpido por un reinicio; "
+                           "no se repite automáticamente", trigger["alarm_id"], trigger["minute_key"])
+    finally:
+        conn.close()
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
         check_alarms,

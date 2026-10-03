@@ -37,6 +37,9 @@ Reglas:
   empieza un contador completo. Cada start() recibe un token nuevo y el job
   solo actúa si su token es el de la alarma que suena: un job antiguo nunca
   para una alarma posterior. Sin límite (0) no se programa nada.
+- Una parada fallida se reintenta cinco veces, cada 30 s. La alarma sigue en
+  stop_pending hasta confirmar silencio; los jobs viejos no afectan a otra
+  reproducción. Un snooze rechazado conserva un margen fijo de dos minutos.
 - Temporizador de sueño (sleep_timer.py): cada start() sube `generation` y
   llama a `on_alarm_start` antes de sonar nada, para anularlo. Es el único
   punto: scheduler, snooze y Probar pasan todos por start().
@@ -52,6 +55,9 @@ from fade import fade_plan, start_fade
 logger = logging.getLogger("alarms")
 
 SNOOZE_MINUTES = 10
+STOP_RETRY_SECONDS = 30
+STOP_RETRY_LIMIT = 5
+START_RETRY_MINUTES = 2
 ALARM_FIELDS = ("id", "name", "time", "source", "spotify_uri")
 VOLUME_FIELDS = ("volume_start", "volume_end", "fade_minutes")  # opcionales
 DURATION_FIELD = "max_duration_minutes"  # opcional; 0 o ausente = sin límite
@@ -164,6 +170,7 @@ class PendingSnooze:
     alarm: dict
     run_at: datetime
     snoozes: int
+    retry_until: Optional[datetime] = None
 
 
 class StopResult(NamedTuple):
@@ -191,6 +198,10 @@ class AlarmPlaybackManager:
         self._pending_view = ()
         self._token = 0                       # sube en cada start(): identifica la reproducción
         self._auto_stop = None                # cancel() del auto-stop pendiente
+        self._stop_retry = None
+        self._stop_retry_attempts = 0
+        self._stop_retry_auto = False
+        self._stop_retry_ticket = 0
         # on_alarm_start(nombre): se llama en cada start() antes de sonar nada
         # (el temporizador de sueño se anula ahí; ver sleep_timer.py).
         self.on_alarm_start = on_alarm_start
@@ -224,6 +235,9 @@ class AlarmPlaybackManager:
             # La generación sube antes de avisar: un temporizador de sueño que se
             # esté creando a la vez ve el cambio y no se programa.
             self._token += 1
+            self._cancel_stop_retry()
+            self._stop_retry_attempts = 0
+            self._stop_retry_auto = False
             token = self._token
             self._notify_alarm_start(alarm["name"])
             self._cancel_fade()  # el fade de la alarma anterior, si lo hubiera
@@ -315,9 +329,14 @@ class AlarmPlaybackManager:
             silenced = True  # "cancelled": no llegó a sonar nada
         if not silenced:
             self._active = replace(active, status="stop_pending")
-            logger.warning("Parada pendiente de «%s»: vuelve a pulsar STOP", active.alarm["name"])
+            self._stop_retry_auto = self._stop_retry_auto or auto
+            self._cancel_auto_stop(log=False)
+            self._schedule_stop_retry()
+            logger.warning("Parada pendiente de «%s»: se reintentará automáticamente "
+                           "con límite; también puedes pulsar STOP", active.alarm["name"])
             return StopResult(self._active, False)
         self._active = None
+        self._cancel_stop_retry()
         self._cancel_auto_stop(log=not auto)
         if auto:
             logger.info("ALARMA DETENIDA POR AUTO-STOP: %s (duración máxima: %s min)",
@@ -422,6 +441,44 @@ class AlarmPlaybackManager:
         if log:
             logger.info("Auto-stop cancelado")
 
+    def _schedule_stop_retry(self):
+        if self._stop_retry is not None or self._stop_retry_attempts >= STOP_RETRY_LIMIT:
+            return
+        token = self._token
+        self._stop_retry_ticket += 1
+        ticket = self._stop_retry_ticket
+        run_at = self._clock() + timedelta(seconds=STOP_RETRY_SECONDS)
+        try:
+            self._stop_retry = self.schedule_once(
+                run_at, lambda: self._fire_stop_retry(token, ticket))
+        except Exception:
+            logger.exception("No se pudo programar el reintento de STOP; usa STOP manual")
+
+    def _fire_stop_retry(self, token, ticket):
+        with self._lock:
+            if (token != self._token or ticket != self._stop_retry_ticket or
+                    self._stop_retry is None or self._active is None or
+                    self._active.status != "stop_pending"):
+                return None
+            self._stop_retry = None
+            self._stop_retry_ticket += 1  # un callback duplicado no vuelve a actuar
+            self._stop_retry_attempts += 1
+            result = self._finish(auto=self._stop_retry_auto)
+            if result is not None and not result.silenced and self._stop_retry_attempts >= STOP_RETRY_LIMIT:
+                logger.error("Agotados los %s reintentos de STOP para «%s»; "
+                             "se mantiene la parada pendiente, usa STOP manual",
+                             STOP_RETRY_LIMIT, result.active.alarm["name"])
+            return result
+
+    def _cancel_stop_retry(self):
+        cancel, self._stop_retry = self._stop_retry, None
+        self._stop_retry_ticket += 1
+        if cancel is not None:
+            try:
+                cancel()
+            except Exception:
+                pass  # callback en vuelo neutralizado por su ticket y generación
+
     def _start_fade(self, plan):
         try:
             self._fade = self.fader(self.spotify.set_volume, plan)
@@ -434,9 +491,9 @@ class AlarmPlaybackManager:
         if fade is not None:
             fade.cancel()
 
-    def _schedule(self, alarm, run_at, snoozes):
+    def _schedule(self, alarm, run_at, snoozes, retry_until=None):
         self._cancel_pending(alarm["id"])
-        pending = PendingSnooze(alarm, run_at, snoozes)
+        pending = PendingSnooze(alarm, run_at, snoozes, retry_until)
         cancel = self.schedule_once(run_at, lambda: self._fire_snooze(pending))
         self._pending[alarm["id"]] = (pending, cancel)
         self._publish_pending()
@@ -449,7 +506,26 @@ class AlarmPlaybackManager:
                 return  # cancelado o sustituido por otro snooze mientras tanto
             del self._pending[pending.alarm["id"]]
             self._publish_pending()
-            self.start(pending.alarm, snoozes=pending.snoozes)
+            now = self._clock()
+            deadline = pending.retry_until or pending.run_at + timedelta(minutes=START_RETRY_MINUTES)
+            if now > deadline:
+                logger.error("Snooze de «%s» no iniciado: agotado el margen de recuperación",
+                             pending.alarm["name"])
+                return
+            result = self.start(pending.alarm, snoozes=pending.snoozes)
+            if result == "stop_pending":
+                retry_at = now + timedelta(seconds=STOP_RETRY_SECONDS)
+                if retry_at <= deadline:
+                    try:
+                        self._schedule(pending.alarm, retry_at, pending.snoozes, deadline)
+                    except Exception:
+                        logger.exception("No se pudo reprogramar el snooze rechazado de «%s»",
+                                         pending.alarm["name"])
+                    else:
+                        logger.warning("Snooze de «%s» pendiente de recuperar STOP", pending.alarm["name"])
+                else:
+                    logger.error("Snooze de «%s» no iniciado: agotado el margen de recuperación",
+                                 pending.alarm["name"])
 
     def _cancel_pending(self, alarm_id):
         entry = self._pending.pop(alarm_id, None)

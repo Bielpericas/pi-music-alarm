@@ -163,10 +163,11 @@ def describe_source(alarm):
     return "Local"
 
 
-def playback_key(active, snoozes):
+def playback_key(active, snoozes, triggers=()):
     """Huella del estado de reproducción: si cambia, la página se recarga."""
     parts = [f"{active.id}@{active.started_at.isoformat()}@{active.via}@{active.status}" if active else "-"]
     parts += [f"{p.alarm['id']}@{p.run_at.isoformat()}" for p in snoozes]
+    parts += [f"trigger:{t['alarm_id']}@{t['minute_key']}@{t['status']}" for t in triggers]
     return "|".join(parts)
 
 
@@ -346,7 +347,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         active, snoozes = playback.active, playback.pending_snoozes
         return {
             "playback_active": active,
-            "playback_key": playback_key(active, snoozes),
+            "playback_key": playback_key(active, snoozes, db.trigger_states()),
             "sleep_timer_state": sleep_timer.status(),
             "day_letters": ui.DAY_LETTERS,
             "day_full": ui.DAY_FULL,
@@ -533,7 +534,7 @@ def create_app(config=None, player=None, spotify=None, bluetooth=None, music=Non
         """Estado para que la página se refresque sola cuando empieza a sonar."""
         active, snoozes = playback.active, playback.pending_snoozes
         return jsonify(
-            key=playback_key(active, snoozes),
+            key=playback_key(active, snoozes, db.trigger_states()),
             active=None if active is None else {
                 "id": active.id,
                 "name": active.alarm["name"],

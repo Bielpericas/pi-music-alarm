@@ -95,6 +95,13 @@
           {% if alarm.source == 'spotify' %}
             <p class="alarm-volume">{{ alarm | describe_volume }}</p>
           {% endif %}
+          {% if alarm.trigger_status == 'stop_pending' %}
+            <p class="alarm-meta">{{ alarm.trigger_minute }} · Inicio pendiente: no se ha podido parar la alarma anterior. Se reintentará hasta dos minutos después de su hora.</p>
+          {% elif alarm.trigger_status == 'expired' %}
+            <p class="alarm-meta">{{ alarm.trigger_minute }} · No iniciada: la parada anterior siguió fallando durante el margen de recuperación.</p>
+          {% elif alarm.trigger_status in ('failed', 'interrupted') %}
+            <p class="alarm-meta">{{ alarm.trigger_minute }} · {% if alarm.trigger_status == 'failed' %}No se pudo iniciar el sonido. Revisa Diagnóstico.{% else %}Intento interrumpido por un reinicio: no se pudo confirmar su resultado.{% endif %}</p>
+          {% endif %}
         </div>
 
         <form method="post" action="{{ url_for('toggle_alarm', alarm_id=alarm.id) }}" class="alarm-toggle">
@@ -119,7 +126,7 @@
               <button class="menu-item menu-danger" type="submit">{{ icon("trash") }}<span>Borrar</span></button>
             </form>
             {% if alarm.last_triggered %}
-              <p class="menu-note">Última vez: {{ alarm.last_triggered }}</p>
+              <p class="menu-note">Último intento: {{ alarm.last_triggered }}</p>
             {% endif %}
           </div>
         </details>
